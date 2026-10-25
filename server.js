@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const oauth = require('./oauth');
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin1234';
@@ -26,6 +27,21 @@ CREATE TABLE IF NOT EXISTS entries (
   finished_at TEXT
 );`);
 try { db.exec('ALTER TABLE entries ADD COLUMN assigned_at TEXT'); } catch {} // 기존 DB 보강
+try { db.exec('ALTER TABLE entries ADD COLUMN user_id INTEGER'); } catch {}
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  UNIQUE (provider, provider_id)
+);
+CREATE TABLE IF NOT EXISTS user_sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);`);
 
 const ACTIVE = "('WAITING','CALLED')"; // 중복 접수 판단: 배정 완료되면 다시 접수 가능
 const sessions = new Set();
@@ -47,6 +63,15 @@ const readBody = (req) =>
 const cookie = (req, name) =>
   (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find(([k]) => k === name)?.[1];
 const isAdmin = (req) => sessions.has(cookie(req, 'admin'));
+const SECURE = oauth.BASE_URL.startsWith('https') ? '; Secure' : '';
+const currentUser = (req) => {
+  const sid = cookie(req, 'sid');
+  return sid ? db.prepare('SELECT u.* FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?').get(sid) : undefined;
+};
+const redirect = (res, to, cookies = []) => {
+  res.writeHead(302, { Location: to, 'Set-Cookie': cookies });
+  res.end();
+};
 
 const publicView = (e) => ({
   token: e.token,
@@ -68,19 +93,35 @@ const TRANSITIONS = {
 };
 
 const api = {
+  'GET /api/me': async (req, res) => {
+    const u = currentUser(req);
+    const active = u && db.prepare(`SELECT token FROM entries WHERE user_id=? AND status IN ${ACTIVE}`).get(u.id);
+    json(res, 200, {
+      user: u ? { name: u.name, provider: u.provider } : null,
+      activeToken: active?.token || null,
+      providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
+    });
+  },
+  'POST /api/logout': async (req, res) => {
+    db.prepare('DELETE FROM user_sessions WHERE token=?').run(cookie(req, 'sid') || '');
+    res.setHeader('Set-Cookie', `sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`);
+    json(res, 200, { ok: true });
+  },
   'POST /api/entries': async (req, res) => {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
     const b = await readBody(req);
-    const name = String(b.name || '').trim().slice(0, 20);
+    const name = String(b.name || user.name).trim().slice(0, 20);
     const phone = String(b.phone || '').replace(/\D/g, '');
     const party = Number(b.partySize);
     if (!name) return json(res, 400, { error: '이름을 입력하세요.' });
     if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
-    const dup = db.prepare(`SELECT token FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(phone);
+    const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, phone);
     if (dup) return json(res, 409, { error: '이미 접수된 대기가 있습니다.', token: dup.token });
     const token = crypto.randomBytes(12).toString('hex');
-    db.prepare('INSERT INTO entries (token,name,phone,party_size) VALUES (?,?,?,?)').run(token, name, phone, party);
+    db.prepare('INSERT INTO entries (token,name,phone,party_size,user_id) VALUES (?,?,?,?,?)').run(token, name, phone, party, user.id);
     notify();
     json(res, 201, { token });
   },
@@ -145,6 +186,28 @@ const server = http.createServer(async (req, res) => {
       return req.on('close', () => listeners.delete(res));
     }
     let m;
+    if (req.method === 'GET' && (m = url.pathname.match(/^\/auth\/(kakao|naver)(\/callback)?$/))) {
+      const name = m[1];
+      if (!oauth.enabled().includes(name)) return redirect(res, '/?login=disabled');
+      if (!m[2]) {
+        const state = crypto.randomBytes(16).toString('hex');
+        return redirect(res, oauth.authorizeUrl(name, state),
+          [`oauth_state=${name}.${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${SECURE}`]);
+      }
+      const state = url.searchParams.get('state');
+      const clear = `oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`;
+      if (!state || cookie(req, 'oauth_state') !== `${name}.${state}` || !url.searchParams.get('code'))
+        return redirect(res, '/?login=failed', [clear]);
+      let profile;
+      try { profile = await oauth.fetchProfile(name, url.searchParams.get('code'), state); }
+      catch (err) { console.error(name, 'login failed:', err.message); return redirect(res, '/?login=failed', [clear]); }
+      db.prepare('INSERT INTO users (provider,provider_id,name) VALUES (?,?,?) ON CONFLICT(provider,provider_id) DO UPDATE SET name=excluded.name')
+        .run(name, profile.id, profile.name || '손님');
+      const u = db.prepare('SELECT id FROM users WHERE provider=? AND provider_id=?').get(name, profile.id);
+      const sid = crypto.randomBytes(24).toString('hex');
+      db.prepare('INSERT INTO user_sessions (token,user_id) VALUES (?,?)').run(sid, u.id);
+      return redirect(res, '/', [clear, `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7776000${SECURE}`]);
+    }
     if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/entries\/([0-9a-f]+)$/))) {
       const e = db.prepare('SELECT * FROM entries WHERE token=?').get(m[1]);
       return e ? json(res, 200, publicView(e)) : json(res, 404, { error: 'not found' });
@@ -182,4 +245,5 @@ if (require.main === module) {
     if (!process.env.ADMIN_PASSWORD) console.log('주의: 기본 관리자 비밀번호 사용 중. ADMIN_PASSWORD 환경변수를 설정하세요.');
   });
 }
+server.oauth = oauth;
 module.exports = server;

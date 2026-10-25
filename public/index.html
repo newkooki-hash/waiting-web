@@ -18,6 +18,10 @@
   input, select { width:100%; padding:12px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
   button { width:100%; margin-top:20px; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
   button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); margin-top:12px; }
+  .sso { display:block; text-align:center; text-decoration:none; padding:14px; margin-top:10px; border-radius:8px; font-weight:600; }
+  .sso.kakao { background:#fee500; color:#191919; }
+  .sso.naver { background:#03c75a; color:#fff; }
+  #userbar[hidden] { display:none; }
   .err { color:#d92d20; margin-top:12px; min-height:1.4em; }
   .big { font-size:3rem; font-weight:700; text-align:center; margin:8px 0; }
   .center { text-align:center; }
@@ -29,6 +33,16 @@
 <body>
 <main>
   <h1>오란다 볼링 대기 접수</h1>
+
+  <section id="login" class="card" hidden>
+    <p class="center muted" style="margin-top:0">간편 로그인 후 대기 접수를 할 수 있습니다.</p>
+    <div id="providers"></div>
+    <div id="loginErr" class="err center" role="alert"></div>
+  </section>
+
+  <div id="userbar" class="muted" hidden style="display:flex;justify-content:space-between;margin-bottom:8px">
+    <span id="me"></span><a href="#" id="logout">로그아웃</a>
+  </div>
 
   <form id="form" class="card" hidden>
     <label for="name">이름</label>
@@ -61,10 +75,28 @@ let token = store.get();
 
 $('party').innerHTML = Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}">${i + 1}명</option>`).join('');
 
-function showForm() { $('form').hidden = false; $('status').hidden = true; }
+let me = { user: null, providers: [] };
+async function loadMe() {
+  me = await (await fetch('/api/me')).json();
+  if (me.user && !token && me.activeToken) { token = me.activeToken; store.set(token); }
+}
+
+function showForm() {
+  const logged = !!me.user;
+  $('login').hidden = logged; $('form').hidden = !logged; $('status').hidden = true;
+  $('userbar').hidden = !logged;
+  if (logged) { $('me').textContent = me.user.name + '님'; if (!$('name').value) $('name').value = me.user.name; }
+  else {
+    $('providers').innerHTML = me.providers.map((p) => `<a class="sso ${p.id}" href="/auth/${p.id}">${p.label}로 시작하기</a>`).join('')
+      || '<div class="muted center">로그인 설정이 아직 되어 있지 않습니다.</div>';
+    const q = new URLSearchParams(location.search).get('login');
+    $('loginErr').textContent = q === 'failed' ? '로그인에 실패했습니다. 다시 시도해 주세요.' : '';
+  }
+}
 
 async function refresh() {
   if (!token) return showForm();
+  $('login').hidden = true; $('userbar').hidden = !me.user;
   const r = await fetch('/api/entries/' + token);
   if (!r.ok) { store.clear(); token = null; return showForm(); }
   const e = await r.json();
@@ -100,6 +132,7 @@ $('form').addEventListener('submit', async (ev) => {
     body: JSON.stringify({ name: $('name').value, phone: $('phone').value, partySize: Number($('party').value) }),
   });
   const b = await r.json();
+  if (r.status === 401) { await loadMe(); return showForm(); }
   if (r.ok || r.status === 409 && b.token) { token = b.token; store.set(token); return refresh(); }
   $('err').textContent = b.error || '접수에 실패했습니다.';
 });
@@ -110,9 +143,17 @@ $('cancel').addEventListener('click', async () => {
   refresh();
 });
 
+$('logout').onclick = async (ev) => {
+  ev.preventDefault();
+  await fetch('/api/logout', { method: 'POST' });
+  store.clear(); token = null; me = { ...me, user: null, activeToken: null };
+  history.replaceState(null, '', '/');
+  showForm();
+};
+
 const es = new EventSource('/api/events');
 es.onmessage = refresh;
-refresh();
+loadMe().then(refresh);
 </script>
 </body>
 </html>
