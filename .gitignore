@@ -1,2 +1,3 @@
 waiting.db*
 node_modules/
+.env

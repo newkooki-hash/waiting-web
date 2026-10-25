@@ -49,7 +49,8 @@ async function fetchProfile(name, code, state) {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form,
   });
   const token = await t.json();
-  if (!t.ok || !token.access_token) throw new Error('token exchange failed');
+  if (!t.ok || !token.access_token)
+    throw new Error(`token exchange failed (${t.status} ${token.error_code || ''} ${token.error || ''} ${token.error_description || ''})`.replace(/\s+/g, ' '));
   const r = await fetch(p.profileUrl, { headers: { Authorization: `Bearer ${token.access_token}` } });
   if (!r.ok) throw new Error('profile fetch failed');
   const profile = p.parse(await r.json());
