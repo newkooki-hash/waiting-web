@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const oauth = require('./oauth');
+const sms = require('./sms');
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin1234';
@@ -41,7 +42,29 @@ CREATE TABLE IF NOT EXISTS user_sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS sms_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  phone TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
 );`);
+try { db.exec('ALTER TABLE users ADD COLUMN phone TEXT'); } catch {}
+try { db.exec('ALTER TABLE users ADD COLUMN phone_verified_at TEXT'); } catch {}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_phone ON users(phone) WHERE phone IS NOT NULL');
+
+// 인증번호 정책: 6자리, 5분 유효, 재발송 60초 간격, 계정당 24시간 5회, 오입력 5회
+const CODE_TTL_MS = 5 * 60 * 1000;
+const RESEND_MS = 60 * 1000;
+const MAX_SENDS_PER_DAY = 5;
+const MAX_ATTEMPTS = 5;
+const CODE_SECRET = process.env.CODE_SECRET || crypto.randomBytes(32).toString('hex');
+const hashCode = (code) => crypto.createHmac('sha256', CODE_SECRET).update(code).digest('hex');
+const maskPhone = (p) => p && `${p.slice(0, 3)}-****-${p.slice(-4)}`;
 
 const ACTIVE = "('WAITING','CALLED')"; // 중복 접수 판단: 배정 완료되면 다시 접수 가능
 const sessions = new Set();
@@ -97,7 +120,7 @@ const api = {
     const u = currentUser(req);
     const active = u && db.prepare(`SELECT token FROM entries WHERE user_id=? AND status IN ${ACTIVE}`).get(u.id);
     json(res, 200, {
-      user: u ? { name: u.name, provider: u.provider } : null,
+      user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone) } : null,
       activeToken: active?.token || null,
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
     });
@@ -107,15 +130,56 @@ const api = {
     res.setHeader('Set-Cookie', `sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`);
     json(res, 200, { ok: true });
   },
+  'POST /api/phone/send': async (req, res) => {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    const phone = String((await readBody(req)).phone || '').replace(/\D/g, '');
+    if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
+    const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(phone, user.id);
+    if (owner) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' });
+    const now = Date.now();
+    const last = db.prepare('SELECT created_at FROM sms_codes WHERE user_id=? ORDER BY id DESC LIMIT 1').get(user.id);
+    if (last && now - last.created_at < RESEND_MS)
+      return json(res, 429, { error: '잠시 후 다시 요청해 주세요.', retryAfter: Math.ceil((RESEND_MS - (now - last.created_at)) / 1000) });
+    const sent = db.prepare('SELECT COUNT(*) n FROM sms_codes WHERE user_id=? AND created_at > ?').get(user.id, now - 24 * 3600 * 1000).n;
+    if (sent >= MAX_SENDS_PER_DAY) return json(res, 429, { error: '오늘 인증 요청 횟수를 초과했습니다.' });
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    // 발송 실패 시에도 기록을 남겨 비용이 드는 반복 요청을 막는다
+    const row = db.prepare('INSERT INTO sms_codes (user_id,phone,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)')
+      .run(user.id, phone, hashCode(code), now + CODE_TTL_MS, now);
+    try { await sms.send(phone, `[오란다볼링] 인증번호 ${code} (5분 이내 입력)`); }
+    catch (err) {
+      console.error('sms send failed:', err.message);
+      db.prepare('UPDATE sms_codes SET used=1 WHERE id=?').run(row.lastInsertRowid);
+      return json(res, 502, { error: '문자 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.' });
+    }
+    json(res, 200, { ok: true, expiresIn: CODE_TTL_MS / 1000 });
+  },
+  'POST /api/phone/verify': async (req, res) => {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    const code = String((await readBody(req)).code || '').trim();
+    const row = db.prepare('SELECT * FROM sms_codes WHERE user_id=? AND used=0 ORDER BY id DESC LIMIT 1').get(user.id);
+    if (!row || row.expires_at < Date.now()) return json(res, 400, { error: '인증번호가 만료되었습니다. 다시 요청해 주세요.' });
+    if (row.attempts >= MAX_ATTEMPTS) return json(res, 429, { error: '입력 횟수를 초과했습니다. 인증번호를 다시 요청해 주세요.' });
+    db.prepare('UPDATE sms_codes SET attempts=attempts+1 WHERE id=?').run(row.id);
+    const a = Buffer.from(hashCode(code)), b = Buffer.from(row.code_hash);
+    if (!crypto.timingSafeEqual(a, b)) return json(res, 400, { error: '인증번호가 일치하지 않습니다.' });
+    try {
+      db.prepare("UPDATE users SET phone=?, phone_verified_at=datetime('now','localtime') WHERE id=?").run(row.phone, user.id);
+    } catch { return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' }); }
+    db.prepare('UPDATE sms_codes SET used=1 WHERE user_id=?').run(user.id);
+    json(res, 200, { ok: true, phone: maskPhone(row.phone) });
+  },
   'POST /api/entries': async (req, res) => {
     const user = currentUser(req);
     if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' });
     const b = await readBody(req);
     const name = String(b.name || user.name).trim().slice(0, 20);
-    const phone = String(b.phone || '').replace(/\D/g, '');
+    const phone = user.phone; // 인증된 번호만 사용
     const party = Number(b.partySize);
     if (!name) return json(res, 400, { error: '이름을 입력하세요.' });
-    if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
     const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, phone);

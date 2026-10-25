@@ -4,6 +4,9 @@ process.env.ADMIN_PASSWORD = 'pw';
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const server = require('./server');
+const sms = require('./sms');
+let lastCode;
+sms.driver = async (to, text) => { lastCode = text.match(/\d{6}/)[0]; };
 
 // 카카오를 흉내 내는 모의 OAuth 서버
 const mock = http.createServer((req, res) => {
@@ -49,14 +52,23 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(cb.location, '/');
     assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동');
 
+    // --- 휴대전화 인증 ---
+    assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'PHONE_REQUIRED');
+    assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).status, 400);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '010-1111-2222' })).status, 200);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).status, 429); // 재발송 간격
+    assert.equal((await call('POST', '/api/phone/verify', { code: lastCode === '000000' ? '111111' : '000000' })).status, 400);
+    assert.equal((await call('POST', '/api/phone/verify', { code: lastCode })).status, 200);
+    assert.equal((await call('GET', '/api/me')).body.user.phone, '010-****-2222');
+    assert.equal((await call('POST', '/api/phone/verify', { code: lastCode })).status, 400); // 재사용 불가
+
     // --- 접수 ---
-    assert.equal((await call('POST', '/api/entries', { phone: '123', partySize: 2 })).status, 400);
-    assert.equal((await call('POST', '/api/entries', { phone: '01011112222', partySize: 9 })).status, 400);
-    const a = await call('POST', '/api/entries', { phone: '010-1111-2222', partySize: 4 }); // 이름은 프로필 기본값
+    assert.equal((await call('POST', '/api/entries', { partySize: 9 })).status, 400);
+    const a = await call('POST', '/api/entries', { phone: '01000000000', partySize: 4 }); // 본문의 번호는 무시, 인증된 번호 사용
     assert.equal(a.status, 201);
     assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token);
     // 같은 계정의 중복 접수는 번호를 바꿔도 막는다
-    assert.equal((await call('POST', '/api/entries', { phone: '01099998888', partySize: 1 })).status, 409);
+    assert.equal((await call('POST', '/api/entries', { partySize: 1 })).status, 409);
 
     // 두 번째 손님: 로그인 쿠키만 바꿔서 접수
     const userSid = jar.sid;
@@ -74,6 +86,7 @@ mock.listen(0, () => server.listen(0, async () => {
     const list = (await call('GET', '/api/admin/entries')).body.entries;
     assert.equal(list.length, 1);
     assert.equal(list[0].name, '홍길동');
+    assert.equal(list[0].phone, '01011112222');
     const ida = list[0].id;
 
     assert.equal((await call('POST', `/api/admin/entries/${ida}/call`)).status, 200);
@@ -85,7 +98,7 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.ok(after.every((e) => e.status === 'ASSIGNED' && e.assignedAt)); // 배정 완료 목록으로 이동
     assert.equal((await call('POST', `/api/entries/${a.body.token}/cancel`)).status, 409); // 이미 배정됨
     // 배정이 끝나면 다시 접수 가능
-    assert.equal((await call('POST', '/api/entries', { phone: '01011112222', partySize: 1 })).status, 201);
+    assert.equal((await call('POST', '/api/entries', { partySize: 1 })).status, 201);
     console.log('모든 테스트 통과');
   } catch (e) {
     console.error(e);
