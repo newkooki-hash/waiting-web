@@ -1,0 +1,22 @@
+[Unit]
+Description=Oranda Bowling waiting web
+After=network.target
+
+[Service]
+User=waiting
+Group=waiting
+WorkingDirectory=/opt/waiting-web
+EnvironmentFile=/etc/waiting-web.env
+ExecStart=/usr/bin/node /opt/waiting-web/server.js
+Restart=always
+RestartSec=3
+
+# 최소 권한
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/waiting-web
+
+[Install]
+WantedBy=multi-user.target
