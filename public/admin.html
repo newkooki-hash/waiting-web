@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대기 관리</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --accent:#d9480f; --line:#e5e7eb; --ok:#2f9e44; --warn:#e8590c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1e2127; --text:#eceef1; --muted:#9aa1ad; --accent:#ff7a3d; --line:#2e333b; --ok:#51cf66; --warn:#ffa94d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,"Malgun Gothic",sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--card); }
+  h1 { font-size:1.1rem; margin:0; }
+  main { max-width:1000px; margin:0 auto; padding:16px; }
+  h2 { font-size:1rem; margin:20px 0 8px; }
+  .lanes { display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:6px; }
+  .lane { padding:8px 4px; text-align:center; border:1px solid var(--line); border-radius:8px; background:var(--card); font-size:.85rem; }
+  .lane.used { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th, td { padding:10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:.8rem; color:var(--muted); font-weight:500; }
+  .wrap { overflow-x:auto; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:.78rem; border:1px solid var(--line); }
+  .badge.CALLED { color:var(--warn); border-color:var(--warn); }
+  .badge.ASSIGNED { color:var(--ok); border-color:var(--ok); }
+  button { padding:7px 12px; font-size:.85rem; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:#d92d20; }
+  input { padding:7px 8px; font-size:.85rem; width:80px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  #login { max-width:320px; margin:80px auto; padding:20px; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+  #login input { width:100%; padding:12px; font-size:1rem; margin-bottom:12px; }
+  #login button { width:100%; padding:12px; }
+  .err { color:#d92d20; min-height:1.4em; }
+  .empty { padding:24px; text-align:center; color:var(--muted); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<form id="login" hidden>
+  <h1 style="margin-bottom:16px">관리자 로그인</h1>
+  <input id="pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+  <button class="primary">로그인</button>
+  <div id="loginErr" class="err" role="alert"></div>
+</form>
+
+<div id="app" hidden>
+  <header><h1>대기 관리</h1><span id="count" style="color:var(--muted)"></span></header>
+  <main>
+    <h2>대기 목록</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>#</th><th>이름</th><th>전화</th><th>인원</th><th>상태</th><th>접수</th><th>처리</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <div id="msg" class="err" role="alert"></div>
+    <h2>배정 완료 (오늘)</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정</th><th>처리</th></tr></thead>
+      <tbody id="done"></tbody>
+    </table></div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const LABEL = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '이용중' };
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let es;
+
+async function post(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const b = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, body: b };
+}
+
+async function load() {
+  const r = await fetch('/api/admin/entries');
+  if (r.status === 401) { $('app').hidden = true; $('login').hidden = false; return; }
+  const { lanes, entries } = await r.json();
+  $('login').hidden = true; $('app').hidden = false;
+  if (!es) { es = new EventSource('/api/events'); es.onmessage = load; }
+
+  const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
+  const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
+  $('count').textContent = `대기 ${waitingList.length}팀 · 배정 ${done.length}팀`;
+  $('done').innerHTML = done.length ? done.map((e) => `
+    <tr data-id="${e.id}">
+      <td>${esc(e.name)}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+      <td><span class="badge ASSIGNED">${esc(e.lanes)}번</span></td>
+      <td>${esc((e.assignedAt || '').slice(11, 16))}</td>
+      <td><button class="danger" data-act="cancel">취소</button></td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty">배정 완료된 팀이 없습니다.</td></tr>';
+  $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
+    <tr data-id="${e.id}">
+      <td>${i + 1}</td><td>${esc(e.name)}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+      <td><span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span></td>
+      <td>${esc(e.createdAt.slice(11, 16))}</td>
+      <td><div class="actions">${actions(e)}</div></td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty">대기 중인 팀이 없습니다.</td></tr>';
+}
+
+function actions(e) {
+  return `${e.status === 'WAITING' ? '<button data-act="call">호출</button>' : ''}
+    <input placeholder="레인 5,6" aria-label="레인 번호">
+    <button class="primary" data-act="assign">배정</button>
+    <button class="danger" data-act="cancel">취소</button>`;
+}
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const tr = btn.closest('tr'), act = btn.dataset.act;
+  if (act === 'cancel' && !confirm('이 대기를 취소할까요?')) return;
+  $('msg').textContent = '';
+  const r = await post(`/api/admin/entries/${tr.dataset.id}/${act}`, act === 'assign' ? { lanes: tr.querySelector('input')?.value } : {});
+  if (!r.ok) $('msg').textContent = r.body.error || '처리에 실패했습니다.';
+  load();
+});
+
+$('login').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const r = await post('/api/admin/login', { password: $('pw').value });
+  if (!r.ok) return ($('loginErr').textContent = r.body.error);
+  $('pw').value = '';
+  load();
+});
+
+load();
+</script>
+</body>
+</html>

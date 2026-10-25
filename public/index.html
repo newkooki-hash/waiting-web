@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오란다 볼링 대기 접수</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --accent:#d9480f; --line:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1e2127; --text:#eceef1; --muted:#9aa1ad; --accent:#ff7a3d; --line:#2e333b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,"Malgun Gothic",sans-serif; }
+  main { max-width:420px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:1.3rem; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
+  label { display:block; font-size:.9rem; color:var(--muted); margin:14px 0 4px; }
+  input, select { width:100%; padding:12px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  button { width:100%; margin-top:20px; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); margin-top:12px; }
+  .err { color:#d92d20; margin-top:12px; min-height:1.4em; }
+  .big { font-size:3rem; font-weight:700; text-align:center; margin:8px 0; }
+  .center { text-align:center; }
+  .muted { color:var(--muted); }
+  .called { color:var(--accent); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>오란다 볼링 대기 접수</h1>
+
+  <form id="form" class="card" hidden>
+    <label for="name">이름</label>
+    <input id="name" autocomplete="name" maxlength="20" required>
+    <label for="phone">휴대전화번호</label>
+    <input id="phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="01012345678" required>
+    <label for="party">인원 (최대 8명)</label>
+    <select id="party"></select>
+    <button type="submit">대기 접수</button>
+    <div id="err" class="err" role="alert"></div>
+  </form>
+
+  <section id="status" class="card" hidden>
+    <div class="center muted" id="who"></div>
+    <div class="big" id="main"></div>
+    <div class="center muted" id="sub"></div>
+    <button id="cancel" class="ghost">대기 취소</button>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY = 'waitingToken';
+const store = {
+  get() { try { return localStorage.getItem(KEY); } catch { return null; } },
+  set(v) { try { localStorage.setItem(KEY, v); } catch {} },
+  clear() { try { localStorage.removeItem(KEY); } catch {} },
+};
+let token = store.get();
+
+$('party').innerHTML = Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}">${i + 1}명</option>`).join('');
+
+function showForm() { $('form').hidden = false; $('status').hidden = true; }
+
+async function refresh() {
+  if (!token) return showForm();
+  const r = await fetch('/api/entries/' + token);
+  if (!r.ok) { store.clear(); token = null; return showForm(); }
+  const e = await r.json();
+  $('form').hidden = true; $('status').hidden = false;
+  $('who').textContent = `${e.name}님 · ${e.partySize}명`;
+  const main = $('main'), sub = $('sub');
+  main.className = 'big';
+  $('cancel').hidden = !(e.status === 'WAITING' || e.status === 'CALLED');
+  if (e.status === 'WAITING') {
+    main.textContent = `${e.position}번째`;
+    sub.textContent = e.position === 1 ? '곧 호출됩니다. 매장 근처에서 대기해 주세요.' : `앞에 ${e.position - 1}팀이 대기 중입니다.`;
+  } else if (e.status === 'CALLED') {
+    main.textContent = '호출되었습니다'; main.className = 'big called';
+    sub.textContent = '프런트로 와주세요.';
+  } else if (e.status === 'ASSIGNED') {
+    main.textContent = `${e.lanes}번 레인`;
+    sub.innerHTML = '배정되었습니다. 즐거운 시간 되세요!<br><a href="#" id="again">새로 접수하기</a>';
+    $('again').onclick = (ev) => { ev.preventDefault(); store.clear(); token = null; showForm(); };
+  } else {
+    main.textContent = e.status === 'FINISHED' ? '이용이 끝났습니다' : '대기가 취소되었습니다';
+    sub.textContent = '';
+    store.clear(); token = null;
+    $('cancel').hidden = true;
+    $('sub').innerHTML = '<a href="/">새로 접수하기</a>';
+  }
+}
+
+$('form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('err').textContent = '';
+  const r = await fetch('/api/entries', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: $('name').value, phone: $('phone').value, partySize: Number($('party').value) }),
+  });
+  const b = await r.json();
+  if (r.ok || r.status === 409 && b.token) { token = b.token; store.set(token); return refresh(); }
+  $('err').textContent = b.error || '접수에 실패했습니다.';
+});
+
+$('cancel').addEventListener('click', async () => {
+  if (!confirm('대기를 취소할까요?')) return;
+  await fetch(`/api/entries/${token}/cancel`, { method: 'POST' });
+  refresh();
+});
+
+const es = new EventSource('/api/events');
+es.onmessage = refresh;
+refresh();
+</script>
+</body>
+</html>
