@@ -70,10 +70,11 @@
         </div>
         <div class="actions" style="margin-top:10px">
           <label><input type="checkbox" id="schedOn" style="width:auto"> 접수 가능 시간</label>
-          <input type="time" id="schedStart" aria-label="시작" style="width:110px">
+          <input type="time" id="schedStart" aria-label="시작" style="width:170px">
           <span>~</span>
-          <input type="time" id="schedEnd" aria-label="종료" style="width:110px">
+          <input type="time" id="schedEnd" aria-label="종료" style="width:170px">
           <button id="saveSched">저장</button>
+          <span id="schedMsg" role="status" style="font-size:.85rem"></span>
         </div>
         <div class="url" style="margin-top:4px">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다(예: 18:00~02:00). 시간대 밖이거나 접수를 중지하면 QR로 접수할 수 없습니다.</div>
         <div class="url" id="qrUrl" style="margin-top:8px"></div>
@@ -171,10 +172,21 @@ $('toggleIntake').onclick = async () => {
   await post('/api/admin/intake/open', { open: !intake.open });
   loadIntake();
 };
+let schedTimer;
 $('saveSched').onclick = async () => {
-  $('msg').textContent = '';
+  const btn = $('saveSched'), msg = $('schedMsg');
+  btn.disabled = true; msg.style.color = 'var(--muted)'; msg.textContent = '저장 중…';
   const r = await post('/api/admin/intake/schedule', { enabled: $('schedOn').checked, start: $('schedStart').value, end: $('schedEnd').value });
-  if (!r.ok) $('msg').textContent = r.body.error || '저장에 실패했습니다.';
+  btn.disabled = false;
+  if (r.ok) {
+    const s = r.body.schedule;
+    msg.style.color = 'var(--ok)';
+    msg.textContent = s.enabled ? `저장되었습니다 (${s.start} ~ ${s.end})` : '저장되었습니다 (시간 제한 없음)';
+  } else {
+    msg.style.color = '#d92d20';
+    msg.textContent = r.body.error || '저장에 실패했습니다.';
+  }
+  clearTimeout(schedTimer); schedTimer = setTimeout(() => (msg.textContent = ''), 4000);
   loadIntake();
 };
 $('rotate').onclick = async () => {
