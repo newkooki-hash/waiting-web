@@ -35,6 +35,10 @@
 <main>
   <h1>오란다 볼링 대기 접수</h1>
 
+  <section id="notice" class="card center" hidden>
+    <p id="noticeText" style="margin:0"></p>
+  </section>
+
   <section id="login" class="card" hidden>
     <p class="center muted" style="margin-top:0">간편 로그인 후 대기 접수를 할 수 있습니다.</p>
     <div id="providers"></div>
@@ -96,6 +100,21 @@ async function loadMe() {
 
 function showForm() {
   const logged = !!me.user;
+  // 접수 중지, 또는 매장 QR을 스캔하지 않은 기기는 접수 단계를 보여주지 않는다
+  const blocked = !me.intake.open
+    ? '지금은 접수 중이 아닙니다.'
+    : !me.intake.allowed
+      ? (new URLSearchParams(location.search).get('qr') === 'invalid'
+        ? '만료되었거나 올바르지 않은 QR 코드입니다. 매장의 최신 QR 코드를 다시 스캔해 주세요.'
+        : '매장에 비치된 QR 코드를 스캔해 접수해 주세요.')
+      : '';
+  $('notice').hidden = !blocked; $('noticeText').textContent = blocked;
+  if (blocked) {
+    $('login').hidden = true; $('verify').hidden = true; $('form').hidden = true; $('status').hidden = true;
+    $('userbar').hidden = !logged;
+    if (logged) $('me').textContent = me.user.name + '님';
+    return;
+  }
   const verified = logged && !!me.user.phone;
   $('login').hidden = logged; $('verify').hidden = !logged || verified;
   $('form').hidden = !verified; $('status').hidden = true;
@@ -114,7 +133,7 @@ function showForm() {
 
 async function refresh() {
   if (!token) return showForm();
-  $('login').hidden = true; $('verify').hidden = true; $('userbar').hidden = !me.user;
+  $('notice').hidden = true; $('login').hidden = true; $('verify').hidden = true; $('userbar').hidden = !me.user;
   const r = await fetch('/api/entries/' + token);
   if (!r.ok) { store.clear(); token = null; return showForm(); }
   const e = await r.json();
@@ -151,7 +170,7 @@ $('form').addEventListener('submit', async (ev) => {
   });
   const b = await r.json();
   if (r.status === 403 && b.code === 'PHONE_REQUIRED') { await loadMe(); return showForm(); }
-  if (r.status === 401) { await loadMe(); return showForm(); }
+  if (r.status === 401 || b.code === 'INTAKE_CLOSED' || b.code === 'QR_REQUIRED') { await loadMe(); return showForm(); }
   if (r.ok || r.status === 409 && b.token) { token = b.token; store.set(token); return refresh(); }
   $('err').textContent = b.error || '접수에 실패했습니다.';
 });
@@ -165,6 +184,7 @@ $('sendCode').onclick = async () => {
   $('verr').textContent = '';
   const btn = $('sendCode'); btn.disabled = true;
   const r = await postJson('/api/phone/send', { phone: $('vphone').value });
+  if (r.status === 403) { await loadMe(); showForm(); }
   if (!r.ok) { $('verr').textContent = r.body.error || '요청에 실패했습니다.'; btn.disabled = false; return; }
   $('codeBox').hidden = false; $('vcode').focus();
   let left = 60; btn.textContent = `다시 받기 (${left})`;

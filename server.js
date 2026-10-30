@@ -58,6 +58,16 @@ try { db.exec('ALTER TABLE users ADD COLUMN phone TEXT'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN phone_verified_at TEXT'); } catch {}
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_phone ON users(phone) WHERE phone IS NOT NULL');
 
+// 접수 설정: 접수 on/off, QR에 담기는 접수 토큰
+db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
+const setSetting = (k, v) => db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
+const newIntakeToken = () => crypto.randomBytes(16).toString('hex');
+if (getSetting('intake_open') === undefined) setSetting('intake_open', '1');
+if (getSetting('intake_token') === undefined) setSetting('intake_token', newIntakeToken());
+const intakeOpen = () => getSetting('intake_open') === '1';
+const INTAKE_COOKIE_AGE = 12 * 3600; // QR을 스캔한 기기는 12시간 동안 접수 가능
+
 // 인증번호 정책: 6자리, 5분 유효, 재발송 60초 간격, 계정당 24시간 5회, 오입력 5회
 const CODE_TTL_MS = 5 * 60 * 1000;
 const RESEND_MS = 60 * 1000;
@@ -86,6 +96,16 @@ const readBody = (req) =>
   });
 const cookie = (req, name) =>
   (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find(([k]) => k === name)?.[1];
+const hasIntakeToken = (req) => {
+  const c = Buffer.from(cookie(req, 'intake') || ''), t = Buffer.from(getSetting('intake_token'));
+  return c.length === t.length && crypto.timingSafeEqual(c, t);
+};
+// 접수(SMS 발송·대기 등록) 가능 여부. 불가하면 응답을 보내고 true를 돌려준다.
+const intakeBlocked = (req, res) => {
+  if (!intakeOpen()) return json(res, 403, { error: '지금은 접수 중이 아닙니다.', code: 'INTAKE_CLOSED' }), true;
+  if (!hasIntakeToken(req)) return json(res, 403, { error: '매장의 QR 코드를 스캔해 접수해 주세요.', code: 'QR_REQUIRED' }), true;
+  return false;
+};
 const isAdmin = (req) => sessions.has(cookie(req, 'admin'));
 const SECURE = oauth.BASE_URL.startsWith('https') ? '; Secure' : '';
 const currentUser = (req) => {
@@ -123,6 +143,7 @@ const api = {
     json(res, 200, {
       user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone) } : null,
       activeToken: active?.token || null,
+      intake: { open: intakeOpen(), allowed: hasIntakeToken(req) },
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
     });
   },
@@ -134,6 +155,7 @@ const api = {
   'POST /api/phone/send': async (req, res) => {
     const user = currentUser(req);
     if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    if (intakeBlocked(req, res)) return;
     const phone = String((await readBody(req)).phone || '').replace(/\D/g, '');
     if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(phone, user.id);
@@ -175,6 +197,7 @@ const api = {
   'POST /api/entries': async (req, res) => {
     const user = currentUser(req);
     if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    if (intakeBlocked(req, res)) return;
     if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' });
     const b = await readBody(req);
     const name = String(b.name || user.name).trim().slice(0, 20);
@@ -197,6 +220,20 @@ const api = {
     sessions.add(s);
     res.setHeader('Set-Cookie', `admin=${s}; HttpOnly; SameSite=Strict; Path=/${SECURE}`);
     json(res, 200, { ok: true });
+  },
+  'GET /api/admin/intake': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    json(res, 200, { open: intakeOpen(), url: `${oauth.BASE_URL}/?t=${getSetting('intake_token')}` });
+  },
+  'POST /api/admin/intake/open': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    setSetting('intake_open', (await readBody(req)).open ? '1' : '0');
+    json(res, 200, { open: intakeOpen() });
+  },
+  'POST /api/admin/intake/rotate': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    setSetting('intake_token', newIntakeToken());
+    json(res, 200, { url: `${oauth.BASE_URL}/?t=${getSetting('intake_token')}` });
   },
   'GET /api/admin/entries': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
@@ -242,7 +279,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   // ADMIN_HOST가 있으면 관리자 호스트는 관리자 화면·API만, 그 외 호스트는 관리자 경로를 막는다.
   if (ADMIN_HOST) {
-    const isAdminPath = /^\/(admin(\.html)?|api\/admin\/.*)$/.test(url.pathname);
+    const isAdminPath = /^\/(admin(\.html)?|qrcode\.js|api\/admin\/.*)$/.test(url.pathname);
     const onAdminHost = (req.headers.host || '').split(':')[0] === ADMIN_HOST;
     if (onAdminHost) {
       if (url.pathname === '/') url.pathname = '/admin';
@@ -252,6 +289,13 @@ const server = http.createServer(async (req, res) => {
   const route = `${req.method} ${url.pathname}`;
   try {
     if (api[route]) return await api[route](req, res);
+
+    // 매장 QR(/?t=토큰): 맞으면 접수 쿠키를 심고 주소에서 토큰을 지운다
+    if (route === 'GET /' && url.searchParams.has('t')) {
+      const ok = url.searchParams.get('t') === getSetting('intake_token');
+      return redirect(res, ok ? '/' : '/?qr=invalid', ok
+        ? [`intake=${getSetting('intake_token')}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${INTAKE_COOKIE_AGE}${SECURE}`] : []);
+    }
 
     if (route === 'GET /api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });

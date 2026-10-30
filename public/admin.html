@@ -35,8 +35,17 @@
   #login button { width:100%; padding:12px; }
   .err { color:#d92d20; min-height:1.4em; }
   .empty { padding:24px; text-align:center; color:var(--muted); }
+  .intake { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  #qr { background:#fff; padding:8px; border-radius:8px; line-height:0; }
+  #qr img { width:160px; height:160px; }
+  .intake .state { font-weight:600; }
+  .intake .state.on { color:var(--ok); }
+  .intake .state.off { color:#d92d20; }
+  .url { word-break:break-all; font-size:.78rem; color:var(--muted); max-width:340px; }
+  @media print { header, h2, .wrap, #msg, .intake > div:last-child, #app > main > :not(.intake) { display:none !important; } body { background:#fff; } }
   [hidden] { display:none !important; }
 </style>
+<script src="/qrcode.js"></script>
 </head>
 <body>
 <form id="login" hidden>
@@ -49,6 +58,20 @@
 <div id="app" hidden>
   <header><h1>대기 관리</h1><span id="count" style="color:var(--muted)"></span></header>
   <main>
+    <h2>접수 설정</h2>
+    <div class="intake">
+      <div id="qr"></div>
+      <div>
+        <div>접수 상태: <span id="intakeState" class="state"></span></div>
+        <div class="actions" style="margin-top:8px">
+          <button id="toggleIntake" class="primary"></button>
+          <button id="rotate">QR 갱신</button>
+          <button id="printQr">QR 인쇄</button>
+        </div>
+        <div class="url" id="qrUrl" style="margin-top:8px"></div>
+        <div class="url" style="margin-top:4px">갱신하면 이전에 출력한 QR은 사용할 수 없습니다. 접수를 중지해도 이미 대기 중인 손님은 유지됩니다.</div>
+      </div>
+    </div>
     <h2>대기 목록</h2>
     <div class="wrap"><table>
       <thead><tr><th>#</th><th>이름</th><th>전화</th><th>인원</th><th>상태</th><th>접수</th><th>처리</th></tr></thead>
@@ -75,12 +98,26 @@ async function post(url, body) {
   return { ok: r.ok, status: r.status, body: b };
 }
 
+let intake;
+function drawIntake() {
+  $('intakeState').textContent = intake.open ? '접수 중' : '접수 중지';
+  $('intakeState').className = 'state ' + (intake.open ? 'on' : 'off');
+  $('toggleIntake').textContent = intake.open ? '접수 중지' : '접수 시작';
+  $('qrUrl').textContent = intake.url;
+  const q = qrcode(0, 'M'); q.addData(intake.url); q.make();
+  $('qr').innerHTML = q.createImgTag(6, 0);
+}
+async function loadIntake() {
+  const r = await fetch('/api/admin/intake');
+  if (r.ok) { intake = await r.json(); drawIntake(); }
+}
+
 async function load() {
   const r = await fetch('/api/admin/entries');
   if (r.status === 401) { $('app').hidden = true; $('login').hidden = false; return; }
   const { lanes, entries } = await r.json();
   $('login').hidden = true; $('app').hidden = false;
-  if (!es) { es = new EventSource('/api/events'); es.onmessage = load; }
+  if (!es) { es = new EventSource('/api/events'); es.onmessage = load; loadIntake(); }
 
   const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
@@ -118,6 +155,18 @@ document.addEventListener('click', async (ev) => {
   if (!r.ok) $('msg').textContent = r.body.error || '처리에 실패했습니다.';
   load();
 });
+
+$('toggleIntake').onclick = async () => {
+  if (intake.open && !confirm('접수를 중지할까요? 손님이 새로 접수할 수 없게 됩니다.')) return;
+  await post('/api/admin/intake/open', { open: !intake.open });
+  loadIntake();
+};
+$('rotate').onclick = async () => {
+  if (!confirm('QR을 갱신하면 이전에 출력한 QR은 사용할 수 없습니다. 갱신할까요?')) return;
+  await post('/api/admin/intake/rotate');
+  loadIntake();
+};
+$('printQr').onclick = () => window.print();
 
 $('login').addEventListener('submit', async (ev) => {
   ev.preventDefault();

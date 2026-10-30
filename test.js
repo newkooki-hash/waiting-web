@@ -52,6 +52,30 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(cb.location, '/');
     assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동');
 
+    // --- 접수 QR 토큰·접수 on/off ---
+    assert.equal((await call('GET', '/api/admin/intake')).status, 401);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).body.code, 'QR_REQUIRED');
+    assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'QR_REQUIRED');
+    assert.equal((await call('GET', '/api/me')).body.intake.allowed, false);
+    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    const qrToken = () => call('GET', '/api/admin/intake').then((r) => new URL(r.body.url).searchParams.get('t'));
+    const scan = (t) => call('GET', `/?t=${t}`, null, { raw: true });
+    assert.equal((await scan('wrong')).location, '/?qr=invalid');
+    assert.equal((await call('GET', '/api/me')).body.intake.allowed, false); // 틀린 토큰은 쿠키를 주지 않음
+    const oldToken = await qrToken();
+    assert.equal((await scan(oldToken)).location, '/');
+    assert.equal((await call('GET', '/api/me')).body.intake.allowed, true);
+    assert.equal((await call('POST', '/api/admin/intake/open', { open: false })).body.open, false);
+    assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'INTAKE_CLOSED');
+    assert.equal((await call('GET', '/api/me')).body.intake.open, false);
+    assert.equal((await call('POST', '/api/admin/intake/open', { open: true })).body.open, true);
+    await call('POST', '/api/admin/intake/rotate'); // 토큰 갱신: 이전 QR·쿠키는 무효
+    assert.notEqual(await qrToken(), oldToken);
+    assert.equal((await call('GET', '/api/me')).body.intake.allowed, false);
+    assert.equal((await scan(await qrToken())).location, '/');
+    assert.equal((await call('GET', '/api/me')).body.intake.allowed, true);
+    delete jar.admin; // 아래 관리자 섹션에서 다시 로그인
+
     // --- 휴대전화 인증 ---
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'PHONE_REQUIRED');
     assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).status, 400);
