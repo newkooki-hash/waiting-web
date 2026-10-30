@@ -227,11 +227,16 @@
 - [x] 자동 테스트(`node test.js`): 로그인, 인증, 접수, 상태 전이
 - [x] 운영 배포: AWS Lightsail 서울(Ubuntu 24.04, 2GB), 고정 IP, 가비아 DNS `waiting` A 레코드, Caddy HTTPS, systemd, 매일 DB 백업 (`deploy/`)
 - [x] 운영 주소 `https://waiting.orandabowling.co.kr` 접속·로그인 시작 확인
+- [x] 네이버 로그인: 멤버관리에 등록한 테스트 계정으로 운영 도메인 로그인·대기 접수 확인 (2026-10-30). 번호는 계정 1개에만 연결되므로 카카오와 다른 번호로 인증해야 함
+- [x] 네이버 서치어드바이저 사이트 소유 확인 메타 태그를 `public/index.html`에 추가·배포
+- [x] 사이트 분리 (2026-10-30): 회원용 `waiting.orandabowling.co.kr`(유지), 관리자용 `admin.orandabowling.co.kr`. 환경변수 `ADMIN_HOST`로 호스트별 경로를 제한(회원용에서는 `/admin`·`/api/admin/*` 404, 관리자용은 관리자 화면·API만), Caddy는 한 설정에서 두 도메인 처리, DNS `admin` A 레코드 추가. 기존 `/admin` 주소는 회원용 호스트에서 더 이상 열리지 않음
+- [x] 관리자 쿠키 `Secure` 속성 추가 (https 환경)
 
 ### 다음 작업
-- [ ] **운영 전 보안 보강**: 관리자 로그인 시도 횟수 제한, 관리자 쿠키 `Secure` 속성, 서버 `ADMIN_PASSWORD`가 3자라 긴 비밀번호로 교체
+- [ ] **운영 전 보안 보강**: 관리자 로그인 시도 횟수 제한, 서버 `ADMIN_PASSWORD`가 3자라 긴 비밀번호로 교체, `admin.` 호스트 접속 IP 제한 검토(현행 CMS는 매장 IP 허용 목록 사용)
+- [ ] `admin.orandabowling.co.kr`에서 관리자 로그인 동작 확인
 - [ ] Lightsail 자동 스냅샷 켜기 (새벽 4~5시 KST)
-- [ ] 네이버 로그인 운영 도메인 실패: 앱이 개발 중 상태라 멤버로 등록된 아이디만 로그인 가능(네이버 안내 화면 확인, 코드 문제 아님). 테스트는 개발자센터 멤버관리에 아이디 추가, 일반 손님 로그인은 API 설정에서 검수 요청(서비스 URL, Callback URL `https://waiting.orandabowling.co.kr/auth/naver/callback` 등록 확인)
+- [ ] 네이버 로그인 앱 검수 요청: 앱이 개발 중 상태라 멤버로 등록된 아이디만 로그인 가능. 일반 손님 로그인은 API 설정에서 검수 요청(서비스 URL, Callback URL `https://waiting.orandabowling.co.kr/auth/naver/callback` 등록 확인)
 - [ ] 알림톡(호출) 템플릿 심사·연동, SMS 대체 발송
 - [ ] 접수 on/off 스위치, 서명 QR 접수 토큰
 - [ ] 관리자 권한 3종(M-27), 블랙리스트(M-22), 순서 조정(M-21), 합류/빼기(M-23)
