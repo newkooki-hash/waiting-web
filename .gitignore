@@ -1,3 +1,6 @@
 waiting.db*
 node_modules/
 .env
+
+# SSH 키
+*.pem
