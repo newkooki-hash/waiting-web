@@ -1,5 +1,5 @@
-# setup.sh가 __DOMAIN__ 을 실제 도메인으로 바꿔서 /etc/caddy/Caddyfile 에 넣는다.
-__DOMAIN__ {
+# setup.sh가 __DOMAIN__(회원용), __ADMIN_DOMAIN__(관리자용)을 실제 도메인으로 바꿔서 /etc/caddy/Caddyfile 에 넣는다.
+__DOMAIN__, __ADMIN_DOMAIN__ {
 	encode gzip
 	reverse_proxy localhost:3000 {
 		flush_interval -1   # 실시간 갱신(SSE)을 버퍼링하지 않는다

@@ -9,6 +9,7 @@ const sms = require('./sms');
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin1234';
+const ADMIN_HOST = process.env.ADMIN_HOST; // 예: admin.orandabowling.co.kr. 비우면 호스트 구분 없음(개발용)
 const LANES = 18;
 const MAX_PARTY = 8;
 const PUBLIC = path.join(__dirname, 'public');
@@ -194,7 +195,7 @@ const api = {
     if (b.password !== ADMIN_PASSWORD) return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
     const s = crypto.randomBytes(24).toString('hex');
     sessions.add(s);
-    res.setHeader('Set-Cookie', `admin=${s}; HttpOnly; SameSite=Strict; Path=/`);
+    res.setHeader('Set-Cookie', `admin=${s}; HttpOnly; SameSite=Strict; Path=/${SECURE}`);
     json(res, 200, { ok: true });
   },
   'GET /api/admin/entries': async (req, res) => {
@@ -239,6 +240,15 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  // ADMIN_HOST가 있으면 관리자 호스트는 관리자 화면·API만, 그 외 호스트는 관리자 경로를 막는다.
+  if (ADMIN_HOST) {
+    const isAdminPath = /^\/(admin(\.html)?|api\/admin\/.*)$/.test(url.pathname);
+    const onAdminHost = (req.headers.host || '').split(':')[0] === ADMIN_HOST;
+    if (onAdminHost) {
+      if (url.pathname === '/') url.pathname = '/admin';
+      else if (!isAdminPath && url.pathname !== '/api/events') return json(res, 404, { error: 'not found' });
+    } else if (isAdminPath) return json(res, 404, { error: 'not found' });
+  }
   const route = `${req.method} ${url.pathname}`;
   try {
     if (api[route]) return await api[route](req, res);

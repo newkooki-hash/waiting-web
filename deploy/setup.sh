@@ -4,6 +4,7 @@
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-waiting.orandabowling.co.kr}"
+ADMIN_DOMAIN="${ADMIN_DOMAIN:-admin.orandabowling.co.kr}"
 REPO="${REPO:-https://github.com/newkooki-hash/waiting-web.git}"
 APP_DIR=/opt/waiting-web
 DATA_DIR=/var/lib/waiting-web
@@ -51,6 +52,7 @@ if [ ! -f "$ENV_FILE" ]; then
     echo "# --- 운영 설정 (setup.sh가 추가) ---"
     echo "NODE_ENV=production"
     echo "BASE_URL=https://$DOMAIN"
+    echo "ADMIN_HOST=$ADMIN_DOMAIN"
     echo "DB_FILE=$DATA_DIR/waiting.db"
     echo "PORT=3000"
   } >> "$ENV_FILE"
@@ -64,7 +66,7 @@ systemctl daemon-reload
 systemctl enable waiting-web
 
 echo "== Caddy 설정 =="
-sed "s/__DOMAIN__/$DOMAIN/" "$APP_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
+sed -e "s/__DOMAIN__/$DOMAIN/" -e "s/__ADMIN_DOMAIN__/$ADMIN_DOMAIN/" "$APP_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
 systemctl reload caddy || systemctl restart caddy
 
 echo "== 백업 크론 (매일 04:00) =="
