@@ -3,103 +3,200 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>대기 관리</title>
+<title>오란다 볼링 관리자</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --accent:#d9480f; --line:#e5e7eb; --ok:#2f9e44; --warn:#e8590c; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#14161a; --card:#1e2127; --text:#eceef1; --muted:#9aa1ad; --accent:#ff7a3d; --line:#2e333b; --ok:#51cf66; --warn:#ffa94d; }
+  /* 레인 오일의 청록 + 핀 화이트 + 호출 앰버. 카운터에서 멀리서도 읽히는 큰 숫자와 큰 버튼이 기준 */
+  :root {
+    --bg:#eef1f3; --card:#fff; --text:#16222b; --muted:#667784; --line:#dbe2e7;
+    --ink:#0f2b36; --ink-text:#e8f1f4; --ink-muted:#8fb0bc;
+    --accent:#0b7a75; --accent-ink:#fff; --accent-soft:#dff3f1;
+    --call:#c76a00; --call-soft:#fff0d9; --ok:#2b8a3e; --ok-soft:#e1f4e5; --bad:#cf2f2f;
+    --radius:10px;
   }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,"Malgun Gothic",sans-serif; }
-  header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--card); }
-  h1 { font-size:1.1rem; margin:0; }
-  main { max-width:1000px; margin:0 auto; padding:16px; }
-  h2 { font-size:1rem; margin:20px 0 8px; }
-  .lanes { display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:6px; }
-  .lane { padding:8px 4px; text-align:center; border:1px solid var(--line); border-radius:8px; background:var(--card); font-size:.85rem; }
-  .lane.used { border-color:var(--accent); color:var(--accent); font-weight:600; }
-  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-  th, td { padding:10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:middle; }
-  th { font-size:.8rem; color:var(--muted); font-weight:500; }
-  .wrap { overflow-x:auto; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:.78rem; border:1px solid var(--line); }
-  .badge.CALLED { color:var(--warn); border-color:var(--warn); }
-  .badge.ASSIGNED { color:var(--ok); border-color:var(--ok); }
-  button { padding:7px 12px; font-size:.85rem; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { color:#d92d20; }
-  input { padding:7px 8px; font-size:.85rem; width:80px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
-  .actions { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
-  #login { max-width:320px; margin:80px auto; padding:20px; background:var(--card); border:1px solid var(--line); border-radius:12px; }
-  #login input { width:100%; padding:12px; font-size:1rem; margin-bottom:12px; }
-  #login button { width:100%; padding:12px; }
-  .err { color:#d92d20; min-height:1.4em; }
-  .empty { padding:24px; text-align:center; color:var(--muted); }
-  .intake { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
-  #qr { background:#fff; padding:8px; border-radius:8px; line-height:0; }
-  #qr img { width:160px; height:160px; }
-  .intake .state { font-weight:600; }
-  .intake .state.on { color:var(--ok); }
-  .intake .state.off { color:#d92d20; }
-  .url { word-break:break-all; font-size:.78rem; color:var(--muted); max-width:340px; }
-  @media print { header, h2, .wrap, #msg, .intake > div:last-child, #app > main > :not(.intake) { display:none !important; } body { background:#fff; } }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0d151a; --card:#162128;--text:#e6eef2; --muted:#8a9ba6; --line:#26353f;
+      --ink:#08181f; --ink-text:#e8f1f4; --ink-muted:#7a9aa6;
+      --accent:#35c2b9; --accent-ink:#06201f; --accent-soft:#12383a;
+      --call:#ffb347; --call-soft:#3a2b10; --ok:#69db7c; --ok-soft:#173222; --bad:#ff6b6b;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,"Malgun Gothic","Apple SD Gothic Neo",sans-serif; font-variant-numeric:tabular-nums; }
   [hidden] { display:none !important; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+
+  /* 헤더 + 메뉴 */
+  header { background:var(--ink); color:var(--ink-text); position:sticky; top:0; z-index:5; }
+  .bar { max-width:1100px; margin:0 auto; padding:0 16px; display:flex; align-items:center; gap:24px; min-height:56px; }
+  .brand { font-weight:700; font-size:1.05rem; white-space:nowrap; letter-spacing:-.01em; }
+  nav { display:flex; gap:4px; flex:1; overflow-x:auto; align-self:stretch; }
+  nav a { display:flex; align-items:center; gap:8px; padding:0 16px; color:var(--ink-muted); text-decoration:none; font-weight:600; white-space:nowrap; border-bottom:3px solid transparent; }
+  nav a:hover { color:var(--ink-text); }
+  nav a[aria-current="page"] { color:#fff; border-bottom-color:var(--accent); }
+  .pill { min-width:24px; padding:1px 8px; border-radius:99px; background:rgba(255,255,255,.14); font-size:.8rem; text-align:center; }
+  nav a[aria-current="page"] .pill { background:var(--accent); color:var(--accent-ink); }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
+  .dot.on { background:#51cf66; }
+  .dot.off { background:#ffa94d; }
+
+  main { max-width:1100px; margin:0 auto; padding:20px 16px 48px; }
+  h2 { font-size:1.25rem; margin:0 0 4px; letter-spacing:-.01em; }
+  .sub { color:var(--muted); margin:0 0 16px; font-size:.9rem; }
+
+  /* 버튼·입력 */
+  button { font:inherit; font-size:.9rem; font-weight:600; padding:9px 14px; min-height:40px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); cursor:pointer; }
+  button:hover { border-color:var(--muted); }
+  button:disabled { opacity:.55; cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+  button.call { background:var(--call-soft); border-color:var(--call); color:var(--call); }
+  button.danger { color:var(--bad); }
+  input[type=text], input[type=time], input[type=password] { font:inherit; padding:9px 10px; min-height:40px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  .err { color:var(--bad); min-height:1.4em; }
+
+  /* 대기 카드 목록 */
+  .list { display:grid; gap:10px; }
+  .row { display:grid; grid-template-columns:56px 1fr auto; gap:14px; align-items:center; background:var(--card); border:1px solid var(--line); border-left:6px solid var(--line); border-radius:var(--radius); padding:12px 16px; }
+  .row.CALLED { border-left-color:var(--call); background:linear-gradient(90deg,var(--call-soft),var(--card) 40%); }
+  .row.WAITING { border-left-color:var(--accent); }
+  .pos { font-size:2rem; font-weight:800; text-align:center; line-height:1; }
+  .pos small { display:block; font-size:.7rem; font-weight:500; color:var(--muted); margin-top:4px; }
+  .who { font-size:1.1rem; font-weight:700; }
+  .meta { color:var(--muted); font-size:.88rem; display:flex; flex-wrap:wrap; gap:4px 14px; }
+  .badge { display:inline-block; padding:1px 9px; border-radius:99px; font-size:.78rem; font-weight:700; margin-left:6px; vertical-align:middle; }
+  .badge.WAITING { background:var(--accent-soft); color:var(--accent); }
+  .badge.CALLED { background:var(--call-soft); color:var(--call); }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
+  .actions input { width:110px; }
+  .empty { padding:40px 16px; text-align:center; color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:var(--radius); }
+
+  /* 완료 표 */
+  .wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--line); }
+  tr:last-child td { border-bottom:0; }
+  th { font-size:.82rem; color:var(--muted); font-weight:600; }
+  .lanechip { display:inline-block; padding:2px 12px; border-radius:99px; background:var(--ok-soft); color:var(--ok); font-weight:700; }
+
+  /* 접수 설정 */
+  .settings { display:grid; grid-template-columns:260px 1fr; gap:16px; align-items:start; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px; }
+  .panel + .panel { margin-top:16px; }
+  .panel h3 { margin:0 0 12px; font-size:1rem; }
+  #qr { background:#fff; padding:10px; border-radius:8px; line-height:0; display:inline-block; }
+  #qr img { width:220px; height:220px; }
+  .state { font-size:1.4rem; font-weight:800; }
+  .state.on { color:var(--ok); } .state.off { color:var(--bad); }
+  .field { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .field label { display:flex; gap:8px; align-items:center; font-weight:600; }
+  .field input[type=checkbox] { width:20px; height:20px; }
+  .hint { color:var(--muted); font-size:.82rem; margin-top:10px; }
+  .url { word-break:break-all; color:var(--muted); font-size:.78rem; margin-top:10px; }
+
+  #login { max-width:340px; margin:12vh auto; padding:24px; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+  #login h1 { margin:0 0 16px; font-size:1.2rem; }
+  #login input, #login button { width:100%; margin-bottom:12px; }
+
+  @media (max-width:720px) {
+    .bar { gap:12px; } .brand { display:none; }
+    nav a { padding:0 12px; }
+    .row { grid-template-columns:44px 1fr; } .row .actions { grid-column:1 / -1; justify-content:flex-start; }
+    .settings { grid-template-columns:1fr; }
+  }
+  @media print {
+    header, .no-print, .sub, h2 { display:none !important; }
+    body { background:#fff; } .settings { display:block; } #qr img { width:340px; height:340px; }
+    .panel { border:0; } #qrPanel { text-align:center; }
+  }
 </style>
 <script src="/qrcode.js"></script>
 </head>
 <body>
 <form id="login" hidden>
-  <h1 style="margin-bottom:16px">관리자 로그인</h1>
+  <h1>오란다 볼링 관리자</h1>
   <input id="pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
   <button class="primary">로그인</button>
   <div id="loginErr" class="err" role="alert"></div>
 </form>
 
 <div id="app" hidden>
-  <header><h1>대기 관리</h1><span id="count" style="color:var(--muted)"></span></header>
-  <main>
-    <h2>접수 설정</h2>
-    <div class="intake">
-      <div id="qr"></div>
-      <div>
-        <div>접수 상태: <span id="intakeState" class="state"></span></div>
-        <div class="actions" style="margin-top:8px">
-          <button id="toggleIntake" class="primary"></button>
-          <button id="rotate">QR 갱신</button>
-          <button id="printQr">QR 인쇄</button>
-        </div>
-        <div class="actions" style="margin-top:10px">
-          <label><input type="checkbox" id="schedOn" style="width:auto"> 접수 가능 시간</label>
-          <input type="time" id="schedStart" aria-label="시작" style="width:170px">
-          <span>~</span>
-          <input type="time" id="schedEnd" aria-label="종료" style="width:170px">
-          <button id="saveSched">저장</button>
-          <span id="schedMsg" role="status" style="font-size:.85rem"></span>
-        </div>
-        <div class="url" style="margin-top:4px">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다(예: 18:00~02:00). 시간대 밖이거나 접수를 중지하면 QR로 접수할 수 없습니다.</div>
-        <div class="url" id="qrUrl" style="margin-top:8px"></div>
-        <div class="url" style="margin-top:4px">갱신하면 이전에 출력한 QR은 사용할 수 없습니다. 접수를 중지해도 이미 대기 중인 손님은 유지됩니다.</div>
-      </div>
+  <header>
+    <div class="bar">
+      <span class="brand">오란다 볼링</span>
+      <nav aria-label="관리 메뉴">
+        <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
+        <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
+        <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
+      </nav>
     </div>
-    <h2>대기 목록</h2>
-    <div class="wrap"><table>
-      <thead><tr><th>#</th><th>이름</th><th>전화</th><th>인원</th><th>상태</th><th>접수</th><th>처리</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table></div>
-    <div id="msg" class="err" role="alert"></div>
-    <h2>배정 완료 (오늘)</h2>
-    <div class="wrap"><table>
-      <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정</th><th>처리</th></tr></thead>
-      <tbody id="done"></tbody>
-    </table></div>
+  </header>
+
+  <main>
+    <section id="v-queue" hidden>
+      <h2>대기 목록</h2>
+      <p class="sub">호출하거나 레인을 입력해 배정합니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
+      <div id="rows" class="list"></div>
+      <div id="msg" class="err" role="alert"></div>
+    </section>
+
+    <section id="v-done" hidden>
+      <h2>배정 완료</h2>
+      <p class="sub">오늘 레인을 배정한 팀입니다. 최근 배정이 위에 표시됩니다.</p>
+      <div class="wrap"><table>
+        <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정 시각</th><th></th></tr></thead>
+        <tbody id="done"></tbody>
+      </table></div>
+    </section>
+
+    <section id="v-intake" hidden>
+      <h2>접수 설정</h2>
+      <p class="sub">손님은 매장의 QR 코드를 스캔해야 접수할 수 있습니다.</p>
+      <div class="settings">
+        <div class="panel" id="qrPanel">
+          <div id="qr"></div>
+          <div class="actions no-print" style="margin-top:12px;justify-content:flex-start">
+            <button id="printQr" class="primary">QR 인쇄</button>
+          </div>
+        </div>
+        <div class="no-print">
+          <div class="panel">
+            <h3>접수 상태</h3>
+            <div class="field">
+              <span id="intakeState" class="state"></span>
+              <button id="toggleIntake"></button>
+            </div>
+            <div class="hint">접수를 중지해도 이미 대기 중인 손님은 유지됩니다.</div>
+          </div>
+          <div class="panel">
+            <h3>접수 가능 시간</h3>
+            <div class="field">
+              <label><input type="checkbox" id="schedOn"> 시간 제한 사용</label>
+              <input type="time" id="schedStart" aria-label="시작" style="width:150px">
+              <span>~</span>
+              <input type="time" id="schedEnd" aria-label="종료" style="width:150px">
+              <button id="saveSched" class="primary">저장</button>
+              <span id="schedMsg" role="status"></span>
+            </div>
+            <div class="hint">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다 (예: 18:00~02:00). 시간대 밖에는 QR로 접수할 수 없습니다.</div>
+          </div>
+          <div class="panel">
+            <h3>QR 코드 관리</h3>
+            <button id="rotate" class="danger">QR 새로 만들기</button>
+            <div class="hint">새로 만들면 이전에 출력한 QR은 사용할 수 없습니다. 인쇄물을 교체할 때만 누르세요.</div>
+            <div class="url" id="qrUrl"></div>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const LABEL = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '이용중' };
+const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-let es;
+const VIEWS = ['queue', 'done', 'intake'];
+let es, intake;
 
 async function post(url, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -107,13 +204,22 @@ async function post(url, body) {
   return { ok: r.ok, status: r.status, body: b };
 }
 
-let intake;
+function route() {
+  const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'queue';
+  for (const n of VIEWS) $('v-' + n).hidden = n !== v;
+  document.querySelectorAll('nav a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+}
+window.addEventListener('hashchange', route);
+
 function drawIntake() {
   $('intakeState').textContent = !intake.open ? '접수 중지' : intake.openNow ? '접수 중' : '접수 시간 외';
   $('intakeState').className = 'state ' + (intake.openNow ? 'on' : 'off');
+  $('navDot').className = 'dot ' + (intake.openNow ? 'on' : intake.open ? 'off' : '');
+  $('navDot').title = $('intakeState').textContent;
   $('schedOn').checked = intake.schedule.enabled;
   $('schedStart').value = intake.schedule.start; $('schedEnd').value = intake.schedule.end;
-  $('toggleIntake').textContent = intake.open ? '접수 중지' : '접수 시작';
+  $('toggleIntake').textContent = intake.open ? '접수 중지하기' : '접수 시작하기';
+  $('toggleIntake').className = intake.open ? 'danger' : 'primary';
   $('qrUrl').textContent = intake.url;
   const q = qrcode(0, 'M'); q.addData(intake.url); q.make();
   $('qr').innerHTML = q.createImgTag(6, 0);
@@ -126,32 +232,36 @@ async function loadIntake() {
 async function load() {
   const r = await fetch('/api/admin/entries');
   if (r.status === 401) { $('app').hidden = true; $('login').hidden = false; return; }
-  const { lanes, entries } = await r.json();
+  const { entries } = await r.json();
   $('login').hidden = true; $('app').hidden = false;
-  if (!es) { es = new EventSource('/api/events'); es.onmessage = load; loadIntake(); }
+  if (!es) { es = new EventSource('/api/events'); es.onmessage = load; loadIntake(); route(); }
 
   const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
-  $('count').textContent = `대기 ${waitingList.length}팀 · 배정 ${done.length}팀`;
+  $('cntWait').textContent = waitingList.length; $('cntDone').textContent = done.length;
+
+  $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
+    <div class="row ${e.status}" data-id="${e.id}">
+      <div class="pos">${i + 1}<small>순번</small></div>
+      <div>
+        <div class="who">${esc(e.name)} · ${e.partySize}명<span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span></div>
+        <div class="meta"><span>${esc(e.phone)}</span><span>${esc(e.createdAt.slice(11, 16))} 접수</span></div>
+      </div>
+      <div class="actions">${actions(e)}</div>
+    </div>`).join('') : '<div class="empty">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
+
   $('done').innerHTML = done.length ? done.map((e) => `
     <tr data-id="${e.id}">
-      <td>${esc(e.name)}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
-      <td><span class="badge ASSIGNED">${esc(e.lanes)}번</span></td>
+      <td><strong>${esc(e.name)}</strong></td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+      <td><span class="lanechip">${esc(e.lanes)}번</span></td>
       <td>${esc((e.assignedAt || '').slice(11, 16))}</td>
-      <td><button class="danger" data-act="cancel">취소</button></td>
-    </tr>`).join('') : '<tr><td colspan="6" class="empty">배정 완료된 팀이 없습니다.</td></tr>';
-  $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
-    <tr data-id="${e.id}">
-      <td>${i + 1}</td><td>${esc(e.name)}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
-      <td><span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span></td>
-      <td>${esc(e.createdAt.slice(11, 16))}</td>
-      <td><div class="actions">${actions(e)}</div></td>
-    </tr>`).join('') : '<tr><td colspan="7" class="empty">대기 중인 팀이 없습니다.</td></tr>';
+      <td><button class="danger" data-act="cancel">배정 취소</button></td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty" style="border:0">오늘 배정한 팀이 없습니다.</td></tr>';
 }
 
 function actions(e) {
-  return `${e.status === 'WAITING' ? '<button data-act="call">호출</button>' : ''}
-    <input placeholder="레인 5,6" aria-label="레인 번호">
+  return `${e.status === 'WAITING' ? '<button class="call" data-act="call">호출</button>' : ''}
+    <input type="text" placeholder="레인 5,6" aria-label="레인 번호">
     <button class="primary" data-act="assign">배정</button>
     <button class="danger" data-act="cancel">취소</button>`;
 }
@@ -159,10 +269,10 @@ function actions(e) {
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button[data-act]');
   if (!btn) return;
-  const tr = btn.closest('tr'), act = btn.dataset.act;
-  if (act === 'cancel' && !confirm('이 대기를 취소할까요?')) return;
+  const row = btn.closest('[data-id]'), act = btn.dataset.act;
+  if (act === 'cancel' && !confirm('취소할까요?')) return;
   $('msg').textContent = '';
-  const r = await post(`/api/admin/entries/${tr.dataset.id}/${act}`, act === 'assign' ? { lanes: tr.querySelector('input')?.value } : {});
+  const r = await post(`/api/admin/entries/${row.dataset.id}/${act}`, act === 'assign' ? { lanes: row.querySelector('input')?.value } : {});
   if (!r.ok) $('msg').textContent = r.body.error || '처리에 실패했습니다.';
   load();
 });
@@ -183,14 +293,14 @@ $('saveSched').onclick = async () => {
     msg.style.color = 'var(--ok)';
     msg.textContent = s.enabled ? `저장되었습니다 (${s.start} ~ ${s.end})` : '저장되었습니다 (시간 제한 없음)';
   } else {
-    msg.style.color = '#d92d20';
+    msg.style.color = 'var(--bad)';
     msg.textContent = r.body.error || '저장에 실패했습니다.';
   }
   clearTimeout(schedTimer); schedTimer = setTimeout(() => (msg.textContent = ''), 4000);
   loadIntake();
 };
 $('rotate').onclick = async () => {
-  if (!confirm('QR을 갱신하면 이전에 출력한 QR은 사용할 수 없습니다. 갱신할까요?')) return;
+  if (!confirm('QR을 새로 만들면 이전에 출력한 QR은 사용할 수 없습니다. 계속할까요?')) return;
   await post('/api/admin/intake/rotate');
   loadIntake();
 };
