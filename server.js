@@ -97,7 +97,9 @@ const hashCode = (code) => crypto.createHmac('sha256', CODE_SECRET).update(code)
 const maskPhone = (p) => p && `${p.slice(0, 3)}-****-${p.slice(-4)}`;
 
 const ACTIVE = "('WAITING','CALLED')"; // 중복 접수 판단: 배정 완료되면 다시 접수 가능
-const sessions = new Set();
+// 관리자 세션: DB에 저장하고 쿠키로 유지한다. 사용할 때마다 만료가 7일 뒤로 밀린다(롤링)
+db.exec('CREATE TABLE IF NOT EXISTS admin_sessions (token TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)');
+const ADMIN_SESSION_MS = 7 * 24 * 3600 * 1000;
 const listeners = new Set();
 const notify = () => listeners.forEach((res) => res.write('data: changed\n\n'));
 
@@ -128,8 +130,12 @@ const intakeBlocked = (req, res) => {
   if (!hasIntakeToken(req)) return json(res, 403, { error: '매장의 QR 코드를 스캔해 접수해 주세요.', code: 'QR_REQUIRED' }), true;
   return false;
 };
-const isAdmin = (req) => sessions.has(cookie(req, 'admin'));
 const SECURE = oauth.BASE_URL.startsWith('https') ? '; Secure' : '';
+const adminCookie = (token) => `admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ADMIN_SESSION_MS / 1000}${SECURE}`;
+const isAdmin = (req) => {
+  const t = cookie(req, 'admin');
+  return !!t && !!db.prepare('SELECT 1 FROM admin_sessions WHERE token=? AND expires_at > ?').get(t, Date.now());
+};
 const currentUser = (req) => {
   const sid = cookie(req, 'sid');
   return sid ? db.prepare('SELECT u.* FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?').get(sid) : undefined;
@@ -241,8 +247,9 @@ const api = {
     const b = await readBody(req);
     if (b.password !== ADMIN_PASSWORD) return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
     const s = crypto.randomBytes(24).toString('hex');
-    sessions.add(s);
-    res.setHeader('Set-Cookie', `admin=${s}; HttpOnly; SameSite=Strict; Path=/${SECURE}`);
+    db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(Date.now());
+    db.prepare('INSERT INTO admin_sessions (token,expires_at) VALUES (?,?)').run(s, Date.now() + ADMIN_SESSION_MS);
+    res.setHeader('Set-Cookie', adminCookie(s));
     json(res, 200, { ok: true });
   },
   'GET /api/admin/intake': async (req, res) => {
@@ -318,6 +325,11 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/') url.pathname = '/admin';
       else if (!isAdminPath && url.pathname !== '/api/events') return json(res, 404, { error: 'not found' });
     } else if (isAdminPath) return json(res, 404, { error: 'not found' });
+  }
+  const adminToken = cookie(req, 'admin');
+  if (adminToken && isAdmin(req)) { // 롤링: 쓸 때마다 만료와 쿠키를 7일 뒤로 연장
+    db.prepare('UPDATE admin_sessions SET expires_at=? WHERE token=?').run(Date.now() + ADMIN_SESSION_MS, adminToken);
+    res.setHeader('Set-Cookie', adminCookie(adminToken));
   }
   const route = `${req.method} ${url.pathname}`;
   try {

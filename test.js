@@ -77,6 +77,12 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await scan(await qrToken())).location, '/');
     assert.equal((await call('GET', '/api/me')).body.intake.allowed, true);
     delete jar.admin; // 아래 관리자 섹션에서 다시 로그인
+    // 관리자 세션은 DB에 저장되고 쓸 때마다 쿠키 만료(7일)가 연장된다
+    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    const roll = await fetch(base + '/api/admin/intake', { headers: { cookie: `admin=${jar.admin}` } });
+    assert.match(roll.headers.getSetCookie().join(';'), /admin=.*Max-Age=604800/);
+    assert.equal((await fetch(base + '/api/admin/intake', { headers: { cookie: 'admin=bogus' } })).status, 401);
+    delete jar.admin;
 
     // --- 접수 가능 시간 ---
     assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
