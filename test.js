@@ -1,6 +1,7 @@
 // 흐름 검증: 소셜 로그인(모의 제공자) → 접수 → 호출 → 배정, 검증 규칙
 process.env.DB_FILE = ':memory:';
 process.env.ADMIN_PASSWORD = 'pw';
+process.env.SMS_MAX_PER_PHONE_DAY = '1'; // 번호당 발송 한도 검증용
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const server = require('./server');
@@ -9,12 +10,13 @@ let lastCode;
 sms.driver = async (to, text) => { lastCode = text.match(/\d{6}/)[0]; };
 
 // 카카오를 흉내 내는 모의 OAuth 서버
+let mockId = 777;
 const mock = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
   if (req.url === '/token') return res.end(JSON.stringify({ access_token: 'tok' }));
   if (req.url === '/me') {
     if (req.headers.authorization !== 'Bearer tok') { res.statusCode = 401; return res.end('{}'); }
-    return res.end(JSON.stringify({ id: 777, kakao_account: { profile: { nickname: '홍길동' } } }));
+    return res.end(JSON.stringify({ id: mockId, kakao_account: { profile: { nickname: '홍길동' } } }));
   }
   res.statusCode = 404; res.end('{}');
 });
@@ -76,6 +78,24 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('GET', '/api/me')).body.intake.allowed, true);
     delete jar.admin; // 아래 관리자 섹션에서 다시 로그인
 
+    // --- 접수 가능 시간 ---
+    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    const sched = (enabled, start, end) => call('POST', '/api/admin/intake/schedule', { enabled, start, end });
+    const hm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    assert.equal((await sched(true, '9:00', '18:00')).status, 400); // 형식 오류
+    assert.equal((await sched(true, '10:00', '10:00')).status, 400);
+    assert.equal((await sched(true, hm(nowMin + 60), hm(nowMin + 120))).body.openNow, false); // 시간대 밖
+    assert.equal((await call('GET', '/api/me')).body.intake.open, false);
+    assert.match((await call('GET', '/api/me')).body.intake.window, /^\d\d:\d\d~\d\d:\d\d$/);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).body.code, 'INTAKE_CLOSED');
+    assert.equal((await sched(true, hm(nowMin - 60), hm(nowMin + 60))).body.openNow, true); // 시간대 안
+    // 시작 > 종료는 자정을 넘기는 시간대: 지금+1시간 시작 ~ 지금-1시간 종료이면 지금은 그 밖이다
+    assert.equal((await sched(true, hm(nowMin + 60), hm(nowMin - 60))).body.openNow, false);
+    assert.equal((await sched(true, hm(nowMin - 60), hm(nowMin - 120))).body.openNow, true); // 지금-1시간 시작 ~ 다음날 지금-2시간 종료
+    assert.equal((await sched(false)).body.openNow, true);
+    delete jar.admin;
+
     // --- 휴대전화 인증 ---
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'PHONE_REQUIRED');
     assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).status, 400);
@@ -123,6 +143,19 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', `/api/entries/${a.body.token}/cancel`)).status, 409); // 이미 배정됨
     // 배정이 끝나면 다시 접수 가능
     assert.equal((await call('POST', '/api/entries', { partySize: 1 })).status, 201);
+    // --- 인증번호 발송 한도: 한 번호로 다른 계정이 연달아 요청하면 막는다 ---
+    const login = async (id) => {
+      mockId = id;
+      await call('POST', '/api/logout');
+      const st = new URL((await call('GET', '/auth/kakao', null, { raw: true })).location).searchParams.get('state');
+      await call('GET', `/auth/kakao/callback?code=c&state=${st}`, null, { raw: true });
+    };
+    await login(888);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01099998888' })).status, 200);
+    await login(999);
+    const limited = await call('POST', '/api/phone/send', { phone: '01099998888' });
+    assert.equal(limited.status, 429);
+    assert.match(limited.body.error, /횟수/);
     console.log('모든 테스트 통과');
   } catch (e) {
     console.error(e);

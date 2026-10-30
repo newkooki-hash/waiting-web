@@ -65,13 +65,32 @@ const setSetting = (k, v) => db.prepare('INSERT INTO settings (key,value) VALUES
 const newIntakeToken = () => crypto.randomBytes(16).toString('hex');
 if (getSetting('intake_open') === undefined) setSetting('intake_open', '1');
 if (getSetting('intake_token') === undefined) setSetting('intake_token', newIntakeToken());
-const intakeOpen = () => getSetting('intake_open') === '1';
+const intakeSwitch = () => getSetting('intake_open') === '1'; // 수동 스위치
+// 접수 가능 시간대: 시작 > 종료이면 자정을 넘기는 시간대(예: 18:00~02:00)로 본다. 서버 시간대 기준
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+const schedule = () => ({ enabled: getSetting('intake_schedule') === '1', start: getSetting('intake_start') || '10:00', end: getSetting('intake_end') || '22:00' });
+const inWindow = (min, start, end) => {
+  const s = toMin(start), e = toMin(end);
+  return s <= e ? min >= s && min < e : min >= s || min < e;
+};
+const intakeOpen = (now = new Date()) => {
+  if (!intakeSwitch()) return false;
+  const sc = schedule();
+  return !sc.enabled || inWindow(now.getHours() * 60 + now.getMinutes(), sc.start, sc.end);
+};
+const outsideWindow = () => { // 스위치는 켜져 있는데 시간대 밖일 때 안내할 시간대
+  const sc = schedule();
+  return intakeSwitch() && sc.enabled && !intakeOpen() ? `${sc.start}~${sc.end}` : null;
+};
 const INTAKE_COOKIE_AGE = 12 * 3600; // QR을 스캔한 기기는 12시간 동안 접수 가능
 
 // 인증번호 정책: 6자리, 5분 유효, 재발송 60초 간격, 계정당 24시간 5회, 오입력 5회
 const CODE_TTL_MS = 5 * 60 * 1000;
 const RESEND_MS = 60 * 1000;
-const MAX_SENDS_PER_DAY = 5;
+const MAX_SENDS_PER_DAY = 5; // 계정당
+// 번호당 일일 발송 한도 (PRD 4.5)
+const MAX_SENDS_PER_PHONE = Number(process.env.SMS_MAX_PER_PHONE_DAY) || 5;
 const MAX_ATTEMPTS = 5;
 const CODE_SECRET = process.env.CODE_SECRET || crypto.randomBytes(32).toString('hex');
 const hashCode = (code) => crypto.createHmac('sha256', CODE_SECRET).update(code).digest('hex');
@@ -102,7 +121,10 @@ const hasIntakeToken = (req) => {
 };
 // 접수(SMS 발송·대기 등록) 가능 여부. 불가하면 응답을 보내고 true를 돌려준다.
 const intakeBlocked = (req, res) => {
-  if (!intakeOpen()) return json(res, 403, { error: '지금은 접수 중이 아닙니다.', code: 'INTAKE_CLOSED' }), true;
+  if (!intakeOpen()) {
+    const w = outsideWindow();
+    return json(res, 403, { error: w ? `접수 가능 시간은 ${w}입니다.` : '지금은 접수 중이 아닙니다.', code: 'INTAKE_CLOSED' }), true;
+  }
   if (!hasIntakeToken(req)) return json(res, 403, { error: '매장의 QR 코드를 스캔해 접수해 주세요.', code: 'QR_REQUIRED' }), true;
   return false;
 };
@@ -143,7 +165,7 @@ const api = {
     json(res, 200, {
       user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone) } : null,
       activeToken: active?.token || null,
-      intake: { open: intakeOpen(), allowed: hasIntakeToken(req) },
+      intake: { open: intakeOpen(), allowed: hasIntakeToken(req), window: outsideWindow() },
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
     });
   },
@@ -166,6 +188,8 @@ const api = {
       return json(res, 429, { error: '잠시 후 다시 요청해 주세요.', retryAfter: Math.ceil((RESEND_MS - (now - last.created_at)) / 1000) });
     const sent = db.prepare('SELECT COUNT(*) n FROM sms_codes WHERE user_id=? AND created_at > ?').get(user.id, now - 24 * 3600 * 1000).n;
     if (sent >= MAX_SENDS_PER_DAY) return json(res, 429, { error: '오늘 인증 요청 횟수를 초과했습니다.' });
+    const phoneSent = db.prepare('SELECT COUNT(*) n FROM sms_codes WHERE phone=? AND created_at > ?').get(phone, now - 24 * 3600 * 1000).n;
+    if (phoneSent >= MAX_SENDS_PER_PHONE) return json(res, 429, { error: '오늘 인증 요청 횟수를 초과했습니다.' });
     const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     // 발송 실패 시에도 기록을 남겨 비용이 드는 반복 요청을 막는다
     const row = db.prepare('INSERT INTO sms_codes (user_id,phone,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)')
@@ -223,12 +247,21 @@ const api = {
   },
   'GET /api/admin/intake': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    json(res, 200, { open: intakeOpen(), url: `${oauth.BASE_URL}/?t=${getSetting('intake_token')}` });
+    json(res, 200, { open: intakeSwitch(), openNow: intakeOpen(), schedule: schedule(), url: `${oauth.BASE_URL}/?t=${getSetting('intake_token')}` });
   },
   'POST /api/admin/intake/open': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     setSetting('intake_open', (await readBody(req)).open ? '1' : '0');
-    json(res, 200, { open: intakeOpen() });
+    json(res, 200, { open: intakeSwitch() });
+  },
+  'POST /api/admin/intake/schedule': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    if (b.enabled && (!HHMM.test(b.start) || !HHMM.test(b.end) || b.start === b.end))
+      return json(res, 400, { error: '시작·종료 시각을 HH:MM 형식으로, 서로 다르게 입력하세요.' });
+    setSetting('intake_schedule', b.enabled ? '1' : '0');
+    if (b.enabled) { setSetting('intake_start', b.start); setSetting('intake_end', b.end); }
+    json(res, 200, { schedule: schedule(), openNow: intakeOpen() });
   },
   'POST /api/admin/intake/rotate': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
