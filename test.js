@@ -162,6 +162,11 @@ mock.listen(0, () => server.listen(0, async () => {
     const limited = await call('POST', '/api/phone/send', { phone: '01099998888' });
     assert.equal(limited.status, 429);
     assert.match(limited.body.error, /횟수/);
+    // --- 관리자 로그인 시도 제한: 5회 실패하면 올바른 비밀번호도 막는다 ---
+    for (let i = 0; i < 5; i++) assert.equal((await call('POST', '/api/admin/login', { password: 'bad' })).status, 401);
+    const locked = await call('POST', '/api/admin/login', { password: 'pw' });
+    assert.equal(locked.status, 429);
+    assert.match(locked.body.error, /분 뒤/);
     console.log('모든 테스트 통과');
   } catch (e) {
     console.error(e);

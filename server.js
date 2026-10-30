@@ -100,6 +100,13 @@ const ACTIVE = "('WAITING','CALLED')"; // 중복 접수 판단: 배정 완료되
 // 관리자 세션: DB에 저장하고 쿠키로 유지한다. 사용할 때마다 만료가 7일 뒤로 밀린다(롤링)
 db.exec('CREATE TABLE IF NOT EXISTS admin_sessions (token TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)');
 const ADMIN_SESSION_MS = 7 * 24 * 3600 * 1000;
+// 관리자 로그인 시도 제한: 15분 안에 IP당 5회, 전체 30회 실패하면 15분간 로그인을 막는다(메모리, 재시작 시 초기화)
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_MAX_FAILS_ALL = 30;
+const loginFails = new Map(); // IP → 실패 시각 목록
+let loginFailsAll = [];
+const recentFails = (list, now) => list.filter((t) => now - t < LOGIN_WINDOW_MS);
 const listeners = new Set();
 const notify = () => listeners.forEach((res) => res.write('data: changed\n\n'));
 
@@ -117,6 +124,11 @@ const readBody = (req) =>
   });
 const cookie = (req, name) =>
   (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find(([k]) => k === name)?.[1];
+const clientIp = (req) => { // Caddy 뒤에서는 X-Forwarded-For의 클라이언트 IP를 쓴다
+  const remote = req.socket.remoteAddress || '';
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return ['::1', '127.0.0.1', '::ffff:127.0.0.1'].includes(remote) && fwd ? fwd : remote;
+};
 const hasIntakeToken = (req) => {
   const c = Buffer.from(cookie(req, 'intake') || ''), t = Buffer.from(getSetting('intake_token'));
   return c.length === t.length && crypto.timingSafeEqual(c, t);
@@ -245,7 +257,19 @@ const api = {
   },
   'POST /api/admin/login': async (req, res) => {
     const b = await readBody(req);
-    if (b.password !== ADMIN_PASSWORD) return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
+    const now = Date.now(), ip = clientIp(req);
+    const mine = recentFails(loginFails.get(ip) || [], now);
+    loginFailsAll = recentFails(loginFailsAll, now);
+    if (mine.length >= LOGIN_MAX_FAILS || loginFailsAll.length >= LOGIN_MAX_FAILS_ALL) {
+      const oldest = (mine.length >= LOGIN_MAX_FAILS ? mine : loginFailsAll)[0];
+      const mins = Math.max(1, Math.ceil((oldest + LOGIN_WINDOW_MS - now) / 60000));
+      return json(res, 429, { error: `로그인 시도가 너무 많습니다. ${mins}분 뒤에 다시 시도하세요.` });
+    }
+    if (b.password !== ADMIN_PASSWORD) {
+      loginFails.set(ip, [...mine, now]); loginFailsAll.push(now);
+      return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
+    }
+    loginFails.delete(ip);
     const s = crypto.randomBytes(24).toString('hex');
     db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(Date.now());
     db.prepare('INSERT INTO admin_sessions (token,expires_at) VALUES (?,?)').run(s, Date.now() + ADMIN_SESSION_MS);
