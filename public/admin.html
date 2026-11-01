@@ -240,6 +240,13 @@
       <div class="field" style="margin-top:12px">
         <button id="mPrev">이전</button><span id="mPage" role="status"></span><button id="mNext">다음</button>
       </div>
+      <dialog id="logDlg">
+        <div style="display:grid;gap:10px;min-width:300px">
+          <strong>변경 이력</strong>
+          <div id="logBody" style="max-height:50vh;overflow:auto"></div>
+          <div class="actions"><button type="button" id="logClose">닫기</button></div>
+        </div>
+      </dialog>
       <dialog id="revealDlg">
         <form method="dialog" id="revealForm" style="display:grid;gap:10px;min-width:260px">
           <strong>원문 보기</strong>
@@ -431,7 +438,7 @@ async function loadMembers() {
   $('mRows').innerHTML = entries.length ? entries.map((m) => `
     <tr data-id="${m.id}"><td><strong>${esc(m.name)}</strong></td><td>${m.age ?? ''}</td><td>${esc(m.gender)}</td>
     <td>${esc(m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td>
-    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button data-m="reveal">원문</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
+    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button data-m="reveal">원문</button><button data-m="log">이력</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
     : '<tr><td colspan="8" class="empty" style="border:0">회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</td></tr>';
   $('mPage').textContent = `${mPage} / ${mLast}쪽 · 총 ${total}명`;
   $('mPrev').disabled = mPage <= 1; $('mNext').disabled = mPage >= mLast;
@@ -442,6 +449,14 @@ $('mNext').onclick = () => { mPage++; loadMembers(); };
 $('mRows').addEventListener('click', (ev) => {
   const btn = ev.target.closest('button[data-m]');
   if (!btn) return;
+  if (btn.dataset.m === 'log') {
+    return fetch('/api/admin/members/log?id=' + btn.closest('tr').dataset.id).then((r) => r.json()).then(({ entries }) => {
+      $('logBody').innerHTML = entries.length ? '<table><tbody>' + entries.map((e) => `<tr><td>${esc(e.changedAt.slice(0, 16))}</td><td>${esc(e.field)}</td>
+        <td>${esc(e.oldValue ?? '없음')} → ${esc(e.newValue ?? '없음')}</td><td>${esc(e.changedBy)}</td></tr>`).join('') + '</tbody></table>'
+        : '<div class="meta">기록이 없습니다.</div>';
+      $('logDlg').showModal();
+    });
+  }
   if (btn.dataset.m === 'tier') {
     const to = btn.dataset.tier;
     if (!confirm(to === '정회원' ? '본인 확인을 마친 회원을 정회원으로 지정할까요? 정회원은 대회에 신청할 수 있습니다.' : '일반회원으로 되돌릴까요?')) return;
@@ -451,6 +466,7 @@ $('mRows').addEventListener('click', (ev) => {
   $('revealPw').value = ''; $('revealOut').textContent = ''; $('revealErr').textContent = ''; $('revealGo').hidden = false;
   $('revealDlg').showModal();
 });
+$('logClose').onclick = () => $('logDlg').close();
 $('revealClose').onclick = () => { $('revealOut').textContent = ''; $('revealDlg').close(); };
 $('revealForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();

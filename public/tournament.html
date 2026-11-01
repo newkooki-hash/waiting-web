@@ -16,7 +16,7 @@
   h2 { font-size:1.1rem; margin:0 0 4px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:12px; }
   label { display:block; font-size:.9rem; color:var(--muted); margin:14px 0 4px; }
-  input { width:100%; padding:12px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  select, input { width:100%; padding:12px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
   button { width:100%; margin-top:16px; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
   button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
   button:disabled { opacity:.55; cursor:default; }
@@ -59,6 +59,23 @@
     <div id="verr" class="err" role="alert"></div>
   </section>
 
+  <section id="profile" class="card" hidden>
+    <h2 id="profileTitle">정회원 가입</h2>
+    <p class="muted" id="profileHint" style="margin:4px 0 0">대회 신청에는 생년월일과 성별이 필요합니다. 핸디캡 적용에 쓰이며, 매장에서 확인할 수 있습니다.</p>
+    <label for="pbirth">생년월일</label>
+    <input id="pbirth" type="date" min="1900-01-01" required>
+    <div class="muted" id="pbirthHint" style="margin-top:4px" hidden></div>
+    <label for="pgender">성별</label>
+    <select id="pgender" required>
+      <option value="">선택</option>
+      <option value="m">남</option>
+      <option value="f">여</option>
+    </select>
+    <button type="button" id="saveProfile">저장</button>
+    <div id="perr" class="err" role="alert"></div>
+    <div class="muted">허위로 입력한 경우 대회 참가가 제한될 수 있습니다. 입력한 내용이 바뀌면 이력이 기록됩니다.</div>
+  </section>
+
   <div id="list"></div>
   <div id="err" class="err" role="alert"></div>
 </main>
@@ -74,6 +91,29 @@ async function post(url, body) {
   return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
 }
 
+let profileLoaded = false;
+async function loadProfile() {
+  const r = await fetch('/api/tournament-profile');
+  if (!r.ok) return;
+  const p = await r.json();
+  me.user.fullMember = p.fullMember;
+  $('profileTitle').textContent = p.fullMember ? '내 정보 (정회원)' : '정회원 가입';
+  if (profileLoaded) return; // 입력 중인 값을 덮어쓰지 않는다
+  profileLoaded = true;
+  $('pbirth').value = p.birthDate; $('pgender').value = p.gender;
+  // 이관 회원은 출생연도만 있는 경우가 있어 연도를 안내한다
+  $('pbirthHint').hidden = !(p.birthYear && !p.birthDate);
+  $('pbirthHint').textContent = p.birthYear ? `기존 정보: ${p.birthYear}년생. 정확한 생년월일을 입력해 주세요.` : '';
+}
+$('saveProfile').onclick = async () => {
+  $('perr').textContent = '';
+  const r = await post('/api/tournament-profile', { birthDate: $('pbirth').value, gender: $('pgender').value });
+  if (!r.ok) return ($('perr').textContent = r.body.error || '저장에 실패했습니다.');
+  $('perr').textContent = ''; profileLoaded = false;
+  await load();
+  $('profileHint').textContent = '저장되었습니다. 정회원으로 대회에 신청할 수 있습니다.';
+};
+
 async function load() {
   me = await (await fetch('/api/me')).json();
   const logged = !!me.user, verified = logged && !!me.user.phone;
@@ -81,6 +121,9 @@ async function load() {
   if (logged) $('me').textContent = me.user.name + '님';
   else $('providers').innerHTML = me.providers.map((p) => `<a class="sso ${p.id}" href="/auth/${p.id}?next=tournament">${p.label}로 시작하기</a>`).join('')
     || '<div class="muted">로그인 설정이 아직 되어 있지 않습니다.</div>';
+
+  $('profile').hidden = !verified;
+  if (verified) await loadProfile();
 
   const { tournaments } = await (await fetch('/api/tournaments')).json();
   $('list').innerHTML = tournaments.length ? tournaments.map((t) => {
@@ -90,7 +133,7 @@ async function load() {
     // 신청하기는 관리자가 정한 신청 시작 시각부터 켜진다. 취소는 입금 전 신청에만
     const canApply = t.apply === 'open' && logged && verified && full && !mine;
     const canCancel = !!mine && t.mine !== 'CONFIRMED';
-    const notice = logged && verified && !full ? '대회는 정회원만 신청할 수 있습니다. 정회원 가입은 본인인증이 필요하며, 매장에 문의해 주세요.' : '';
+    const notice = logged && verified && !full ? '대회는 정회원만 신청할 수 있습니다. 위에서 생년월일과 성별을 입력해 정회원으로 가입해 주세요.' : '';
     return `<section class="card">
       <h2>${esc(t.name)}</h2>
       <div class="muted">대회 ${esc(t.eventAt)}</div>
@@ -140,7 +183,7 @@ $('checkCode').onclick = async () => {
   if (!r.ok) { $('verr').textContent = r.body.error || '인증에 실패했습니다.'; return; }
   load();
 };
-$('logout').onclick = async (ev) => { ev.preventDefault(); await post('/api/logout'); load(); };
+$('logout').onclick = async (ev) => { ev.preventDefault(); await post('/api/logout'); profileLoaded = false; load(); };
 
 load();
 </script>

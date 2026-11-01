@@ -284,6 +284,31 @@ mock.listen(0, () => server.listen(0, async () => {
     // 대회는 정회원만 신청할 수 있다
     assert.equal((await call('GET', '/api/me')).body.user.fullMember, false);
     assert.equal((await call('POST', `/api/tournaments/${tid}/apply`)).body.code, 'MEMBER_REQUIRED');
+    // 정회원 가입: 본인이 생년월일·성별을 입력하면 바로 정회원이 되고 변경 이력이 남는다
+    assert.equal((await fetch(base + '/api/tournament-profile')).status, 401);
+    const me0 = (await call('GET', '/api/tournament-profile')).body;
+    assert.deepEqual([me0.fullMember, me0.birthDate, me0.gender], [false, '', '']);
+    for (const bad of [{ birthDate: '1990-13-01', gender: 'm' }, { birthDate: '2999-01-01', gender: 'm' }, { birthDate: '1899-12-31', gender: 'm' }, { birthDate: '1990-02-30', gender: 'm' }, { birthDate: '', gender: 'm' }, { birthDate: '1990-05-17', gender: 'x' }]) {
+      assert.equal((await call('POST', '/api/tournament-profile', bad)).status, 400);
+    }
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1990-05-17', gender: 'm' })).status, 200);
+    assert.equal((await call('GET', '/api/me')).body.user.fullMember, true);
+    assert.deepEqual((({ fullMember, birthDate, gender }) => ({ fullMember, birthDate, gender }))((await call('GET', '/api/tournament-profile')).body), { fullMember: true, birthDate: '1990-05-17', gender: 'm' });
+    const prof = (await members('?q=홍길동')).entries[0];
+    assert.deepEqual([prof.tier, prof.gender, prof.birthDate, prof.age], ['정회원', '남', '1990-05-17', new Date().getFullYear() - 1990]);
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1990-05-17', gender: 'm' })).status, 200); // 같은 값 재저장은 이력을 늘리지 않는다
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1991-01-02', gender: 'm' })).status, 200); // 수정 가능, 이력 기록
+    const hist2 = (await call('GET', `/api/admin/members/log?id=${prof.id}`)).body.entries;
+    assert.deepEqual(hist2.map((e) => [e.field, e.oldValue, e.newValue, e.changedBy]), [
+      ['생년월일', '1990-05-17', '1991-01-02', '본인'],
+      ['등급', '일반', '정회원', '본인'], ['성별', null, 'm', '본인'], ['생년월일', null, '1990-05-17', '본인'],
+    ]);
+    assert.equal((await fetch(base + `/api/admin/members/log?id=${prof.id}`)).status, 401);
+    assert.equal((await call('POST', '/api/admin/members/tier', { id: prof.id, tier: '일반' })).status, 200); // 관리자 해제도 이력
+    const last = (await call('GET', `/api/admin/members/log?id=${prof.id}`)).body.entries[0];
+    assert.deepEqual([last.field, last.oldValue, last.newValue, last.changedBy], ['등급', '정회원', '일반', '관리자']);
+    assert.equal((await call('GET', '/api/me')).body.user.fullMember, false);
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1991-01-02', gender: 'm' })).status, 200); // 다시 가입
     assert.equal((await call('POST', `/api/tournaments/${tid}/entries`)).status, 404); // 없는 경로
     assert.equal((await call('POST', `/api/admin/tournaments/${tid}/entries`, { name: '김대리', phone: '01070001000' })).status, 403); // 회원 아님
     await call('POST', '/api/admin/members/import', { csv: ['name,phone', '김대리,01070001000', '박대기,01070002000', '최대기,01070003000'].join('\r\n') });
