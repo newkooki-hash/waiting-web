@@ -180,6 +180,41 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.deepEqual([...new Uint8Array(await csv.arrayBuffer()).slice(0, 3)], [0xEF, 0xBB, 0xBF]); // 엑셀용 BOM
     assert.equal((await fetch(base + '/api/admin/history')).status, 401);
     assert.equal((await fetch(base + '/api/admin/entries', { method: 'POST' })).status, 401);
+    // --- 순서 조정: 양보·맨뒤로 ---
+    const order = async () => (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status !== 'ASSIGNED');
+    const [first, second] = await order();
+    assert.equal((await call('POST', `/api/admin/entries/${second.id}/yield`)).status, 409); // 이미 맨 뒤
+    assert.equal((await call('POST', `/api/admin/entries/${first.id}/call`)).status, 200);
+    assert.equal((await call('POST', `/api/admin/entries/${first.id}/yield`)).status, 200);
+    let now = await order();
+    assert.deepEqual(now.map((e) => e.id), [second.id, first.id]);
+    assert.equal(now[1].status, 'WAITING'); // 호출된 건이 양보하면 대기로 돌아간다
+    assert.equal((await call('POST', `/api/admin/entries/${second.id}/tail`)).status, 200);
+    assert.deepEqual((await order()).map((e) => e.id), [first.id, second.id]);
+    assert.equal((await call('POST', `/api/admin/entries/${m.id}/yield`)).status, 409); // 취소 건은 불가
+    const pos = (await call('GET', `/api/entries/${(await call('GET', '/api/me')).body.activeToken}`)).body;
+    assert.ok(pos.position === 1 || pos.position === 2);
+    // --- 블랙리스트 ---
+    const qrEntry = (await order()).find((e) => e.phone === '01011112222');
+    const noPhone = (await order()).find((e) => !e.phone);
+    assert.equal((await call('POST', `/api/admin/entries/${noPhone.id}/blacklist`, { reason: '테스트' })).status, 400); // 번호 없음
+    assert.equal((await call('POST', `/api/admin/entries/${qrEntry.id}/blacklist`, { reason: ' ' })).status, 400); // 사유 필수
+    assert.equal((await call('POST', `/api/admin/entries/${qrEntry.id}/blacklist`, { reason: '반복 노쇼' })).status, 200);
+    const bl = (await call('GET', '/api/admin/blacklist')).body.entries;
+    assert.equal(bl.length, 1);
+    assert.equal(bl[0].reason, '반복 노쇼');
+    assert.ok(!(await order()).some((e) => e.id === qrEntry.id)); // 대기 중이던 건은 취소됨
+    const blocked = await call('POST', '/api/entries', { partySize: 1 });
+    assert.equal(blocked.status, 403);
+    assert.equal(blocked.body.code, 'BLACKLISTED');
+    assert.ok(!JSON.stringify(blocked.body).includes('노쇼')); // 사유는 손님에게 보이지 않는다
+    assert.equal((await manual({ name: '다른이름', phone: '010-1111-2222', partySize: 1 })).status, 403);
+    assert.equal((await call('POST', '/api/admin/blacklist', { phone: '010-1111-2222', reason: '사유 갱신' })).status, 200); // 같은 번호는 갱신
+    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.length, 1);
+    assert.equal((await call('POST', '/api/admin/blacklist', { phone: '123', reason: 'x' })).status, 400);
+    assert.equal((await call('POST', '/api/admin/blacklist/remove', { id: bl[0].id })).status, 200);
+    assert.equal((await manual({ name: '해제후', phone: '01011112222', partySize: 1 })).status, 201);
+    assert.equal((await fetch(base + '/api/admin/blacklist')).status, 401);
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);

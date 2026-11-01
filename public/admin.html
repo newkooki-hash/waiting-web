@@ -127,6 +127,7 @@
         <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
         <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
         <a href="#history" data-view="history">이력 조회</a>
+        <a href="#blacklist" data-view="blacklist">블랙리스트</a>
         <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
       </nav>
       <button id="logout" style="margin-left:auto">로그아웃</button>
@@ -177,6 +178,22 @@
       <div id="hCount" class="hint"></div>
     </section>
 
+    <section id="v-blacklist" hidden>
+      <h2>블랙리스트</h2>
+      <p class="sub">등록된 번호는 접수할 수 없습니다. 사유는 직원만 볼 수 있고 손님에게는 보이지 않습니다.</p>
+      <form id="bForm" class="panel field" style="margin-bottom:12px">
+        <input type="text" id="bPhone" placeholder="전화" inputmode="numeric" required style="width:150px">
+        <input type="text" id="bName" placeholder="이름 (선택)" maxlength="20" style="width:120px">
+        <input type="text" id="bReason" placeholder="등록 사유" maxlength="200" required style="width:260px">
+        <button class="primary">등록</button>
+      </form>
+      <div class="wrap"><table>
+        <thead><tr><th>이름</th><th>전화</th><th>사유</th><th>등록일</th><th></th></tr></thead>
+        <tbody id="bRows"></tbody>
+      </table></div>
+      <div id="bMsg" class="err" role="alert"></div>
+    </section>
+
     <section id="v-intake" hidden>
       <h2>접수 설정</h2>
       <p class="sub">손님은 매장의 QR 코드를 스캔해야 접수할 수 있습니다.</p>
@@ -225,7 +242,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'intake'];
+const VIEWS = ['queue', 'done', 'history', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -239,7 +256,32 @@ function route() {
   for (const n of VIEWS) $('v-' + n).hidden = n !== v;
   document.querySelectorAll('nav a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   if (v === 'history') loadHistory();
+  if (v === 'blacklist') loadBlacklist();
 }
+
+async function loadBlacklist() {
+  const r = await fetch('/api/admin/blacklist');
+  if (!r.ok) return;
+  const { entries } = await r.json();
+  $('bRows').innerHTML = entries.length ? entries.map((b) => `
+    <tr data-id="${b.id}"><td><strong>${esc(b.name || '')}</strong></td><td>${esc(b.phone)}</td><td>${esc(b.reason)}</td>
+    <td>${esc(b.createdAt.slice(0, 10))}</td><td><button data-b="remove">해제</button></td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty" style="border:0">등록된 번호가 없습니다.</td></tr>';
+}
+$('bForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('bMsg').textContent = '';
+  const r = await post('/api/admin/blacklist', { phone: $('bPhone').value, name: $('bName').value, reason: $('bReason').value });
+  if (!r.ok) return ($('bMsg').textContent = r.body.error || '등록에 실패했습니다.');
+  ev.target.reset();
+  loadBlacklist(); load();
+});
+$('bRows').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-b]');
+  if (!btn || !confirm('블랙리스트에서 해제할까요?')) return;
+  await post('/api/admin/blacklist/remove', { id: Number(btn.closest('tr').dataset.id) });
+  loadBlacklist();
+});
 
 const today = () => new Date().toLocaleDateString('sv');
 const historyQuery = () => new URLSearchParams({ from: $('hFrom').value, to: $('hTo').value || $('hFrom').value, q: $('hQ').value, lane: $('hLane').value });
@@ -318,7 +360,10 @@ async function load() {
 
 function actions(e) {
   return `${e.status === 'WAITING' ? '<button class="call" data-act="call">호출</button>' : ''}
+    <button data-act="yield" title="한 칸 뒤로">양보</button>
+    <button data-act="tail" title="맨 뒤로 보내기">맨뒤로</button>
     <button data-act="edit">수정</button>
+    <button class="danger" data-act="blacklist">블랙리스트</button>
     <input type="text" placeholder="레인 5,6" aria-label="레인 번호">
     <button class="primary" data-act="assign">배정</button>
     <button class="danger" data-act="cancel">취소</button>`;
@@ -333,6 +378,11 @@ document.addEventListener('click', async (ev) => {
   if (act === 'cancel') { // 확인 창에서 취소하면 중단, 사유는 비워도 된다
     const reason = prompt('취소 사유를 입력하세요 (선택)', '');
     if (reason === null) return;
+    body = { reason };
+  }
+  if (act === 'blacklist') {
+    const reason = prompt('블랙리스트 등록 사유 (필수). 이 번호의 대기 중인 건은 취소됩니다.', '');
+    if (!reason) return;
     body = { reason };
   }
   if (act === 'edit') {

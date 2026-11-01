@@ -32,6 +32,30 @@ try { db.exec('ALTER TABLE entries ADD COLUMN assigned_at TEXT'); } catch {} // 
 try { db.exec('ALTER TABLE entries ADD COLUMN user_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN memo TEXT'); } catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN cancel_reason TEXT'); } catch {}
+// 블랙리스트: 전화번호 기준으로 접수를 막는다. 사유(메모)는 관리자만 본다
+db.exec(`CREATE TABLE IF NOT EXISTS blacklist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL UNIQUE,
+  name TEXT,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+const isBlacklisted = (phone) => !!phone && !!db.prepare('SELECT 1 FROM blacklist WHERE phone=?').get(phone);
+const BLACKLISTED = { error: '접수할 수 없습니다. 매장 직원에게 문의해 주세요.', code: 'BLACKLISTED' };
+// 이미 등록된 번호면 사유를 갱신한다. 대기 중인 건은 함께 취소한다
+const addBlacklist = (phone, name, reason) => {
+  db.prepare(`INSERT INTO blacklist (phone,name,reason) VALUES (?,?,?)
+    ON CONFLICT(phone) DO UPDATE SET reason=excluded.reason, name=COALESCE(excluded.name, name)`).run(phone, name || null, reason);
+  db.prepare(`UPDATE entries SET status='CANCELED', cancel_reason='블랙리스트', finished_at=datetime('now','localtime')
+    WHERE phone=? AND status IN ('WAITING','CALLED')`).run(phone);
+  notify();
+};
+// 대기 순서(seq): 접수 순으로 늘어나고, 양보·맨뒤로 보내기가 이 값을 바꾼다
+try { db.exec('ALTER TABLE entries ADD COLUMN seq INTEGER'); } catch {}
+db.exec(`UPDATE entries SET seq=id WHERE seq IS NULL;
+CREATE TRIGGER IF NOT EXISTS entries_seq AFTER INSERT ON entries WHEN NEW.seq IS NULL BEGIN
+  UPDATE entries SET seq=(SELECT COALESCE(MAX(seq),0)+1 FROM entries) WHERE id=NEW.id;
+END;`);
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,7 +190,7 @@ const publicView = (e) => ({
   status: e.status,
   lanes: e.lanes,
   position: e.status === 'WAITING' || e.status === 'CALLED'
-    ? db.prepare("SELECT COUNT(*) n FROM entries WHERE status IN ('WAITING','CALLED') AND id < ?").get(e.id).n + 1
+    ? db.prepare("SELECT COUNT(*) n FROM entries WHERE status IN ('WAITING','CALLED') AND seq < ?").get(e.seq).n + 1
     : null,
 });
 
@@ -250,6 +274,7 @@ const api = {
     if (!name) return json(res, 400, { error: '이름을 입력하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    if (isBlacklisted(phone)) return json(res, 403, BLACKLISTED);
     const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, phone);
     if (dup) return json(res, 409, { error: '이미 접수된 대기가 있습니다.', token: dup.token });
     const token = crypto.randomBytes(12).toString('hex');
@@ -304,7 +329,7 @@ const api = {
   'GET /api/admin/entries': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const rows = db.prepare(`SELECT * FROM entries WHERE status IN ${ACTIVE}
-      OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime')) ORDER BY id`).all();
+      OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime')) ORDER BY seq`).all();
     json(res, 200, {
       lanes: LANES,
       entries: rows.map((e) => ({
@@ -330,12 +355,32 @@ const api = {
     if (phone && !/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    if (isBlacklisted(phone)) return json(res, 403, { error: '블랙리스트에 등록된 번호입니다.' });
     if (phone && db.prepare(`SELECT 1 FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(phone))
       return json(res, 409, { error: '이미 접수된 대기가 있습니다.' });
     db.prepare('INSERT INTO entries (token,name,phone,party_size,memo) VALUES (?,?,?,?,?)')
       .run(crypto.randomBytes(12).toString('hex'), name, phone, party, String(b.memo || '').trim().slice(0, 200) || null);
     notify();
     json(res, 201, { ok: true });
+  },
+  'GET /api/admin/blacklist': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    json(res, 200, { entries: db.prepare('SELECT id, phone, name, reason, created_at AS createdAt FROM blacklist ORDER BY id DESC').all() });
+  },
+  'POST /api/admin/blacklist': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const phone = String(b.phone || '').replace(/\D/g, '');
+    const reason = String(b.reason || '').trim().slice(0, 200);
+    if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
+    if (!reason) return json(res, 400, { error: '등록 사유를 입력하세요.' });
+    addBlacklist(phone, String(b.name || '').trim().slice(0, 20), reason);
+    json(res, 200, { ok: true });
+  },
+  'POST /api/admin/blacklist/remove': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    db.prepare('DELETE FROM blacklist WHERE id=?').run(Number((await readBody(req)).id));
+    json(res, 200, { ok: true });
   },
   // 이력 조회(M-11): 날짜·이름/연락처·레인 검색. format=csv이면 엑셀용 CSV로 내려준다
   'GET /api/admin/history': async (req, res) => {
@@ -382,6 +427,25 @@ async function handleAction(req, res, id, action) {
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY) return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
     const memo = b.memo === undefined ? e.memo : String(b.memo).trim().slice(0, 200) || null;
     db.prepare('UPDATE entries SET party_size=?, memo=? WHERE id=?').run(party, memo, id);
+    notify();
+    return json(res, 200, { ok: true });
+  }
+  if (action === 'blacklist' && e) { // 대기 건의 번호를 블랙리스트에 올린다 (그 번호의 대기 건은 취소됨)
+    const reason = String(b.reason || '').trim().slice(0, 200);
+    if (!e.phone) return json(res, 400, { error: '전화번호가 없는 건은 블랙리스트에 올릴 수 없습니다.' });
+    if (!reason) return json(res, 400, { error: '등록 사유를 입력하세요.' });
+    addBlacklist(e.phone, e.name, reason);
+    return json(res, 200, { ok: true });
+  }
+  if ((action === 'yield' || action === 'tail') && e) { // 순서 조정: 양보(한 칸 뒤로), 맨뒤로. 호출된 건이면 대기로 되돌린다
+    if (e.status !== 'WAITING' && e.status !== 'CALLED') return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
+    const next = db.prepare(`SELECT id, seq FROM entries WHERE status IN ${ACTIVE} AND seq > ? ORDER BY seq LIMIT 1`).get(e.seq);
+    if (!next) return json(res, 409, { error: '이미 맨 뒤입니다.' });
+    if (action === 'yield') {
+      db.prepare('UPDATE entries SET seq=? WHERE id=?').run(next.seq, id);
+      db.prepare('UPDATE entries SET seq=? WHERE id=?').run(e.seq, next.id);
+    } else db.prepare('UPDATE entries SET seq=(SELECT MAX(seq)+1 FROM entries) WHERE id=?').run(id);
+    db.prepare("UPDATE entries SET status='WAITING', called_at=NULL WHERE id=?").run(id);
     notify();
     return json(res, 200, { ok: true });
   }
