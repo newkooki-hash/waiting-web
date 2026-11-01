@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오란다 볼링 행사 일정</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --accent:#d9480f; --line:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1e2127; --text:#eceef1; --muted:#9aa1ad; --accent:#ff7a3d; --line:#2e333b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,"Malgun Gothic",sans-serif; }
+  main { max-width:420px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:1.3rem; margin:0 0 16px; }
+  .nav { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .nav strong { font-size:1.1rem; }
+  .nav button { width:auto; padding:8px 14px; font:inherit; font-weight:600; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); cursor:pointer; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:10px; }
+  .date { color:var(--accent); font-weight:700; font-size:.9rem; }
+  .title { font-weight:700; }
+  .memo { white-space:pre-wrap; color:var(--muted); font-size:.9rem; margin-top:4px; }
+  .muted { color:var(--muted); }
+  .today { border-color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>행사 일정</h1>
+  <p class="muted"><a href="/" style="color:inherit">← 대기 접수</a></p>
+  <div class="nav">
+    <button id="prev" aria-label="이전 달">‹ 이전</button>
+    <strong id="label"></strong>
+    <button id="next" aria-label="다음 달">다음 ›</button>
+  </div>
+  <div id="list"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const DAY = ['일', '월', '화', '수', '목', '금', '토'];
+let month = new Date().toLocaleDateString('sv').slice(0, 7);
+const shift = (m, n) => { const d = new Date(Number(m.slice(0, 4)), Number(m.slice(5)) - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+
+async function load() {
+  const r = await (await fetch('/api/calendar?month=' + month)).json();
+  $('label').textContent = `${month.slice(0, 4)}년 ${Number(month.slice(5))}월`;
+  const today = new Date().toLocaleDateString('sv');
+  $('list').innerHTML = r.events.length ? r.events.map((e) => {
+    const d = new Date(e.date + 'T00:00:00');
+    return `<div class="card ${e.date === today ? 'today' : ''}">
+      <div class="date">${d.getMonth() + 1}월 ${d.getDate()}일 (${DAY[d.getDay()]})${e.date === today ? ' · 오늘' : ''}</div>
+      <div class="title">${esc(e.title)}</div>${e.memo ? `<div class="memo">${esc(e.memo)}</div>` : ''}
+    </div>`;
+  }).join('') : '<div class="card muted">이 달에 등록된 일정이 없습니다.</div>';
+}
+$('prev').onclick = () => { month = shift(month, -1); load(); };
+$('next').onclick = () => { month = shift(month, 1); load(); };
+load();
+</script>
+</body>
+</html>

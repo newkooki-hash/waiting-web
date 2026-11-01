@@ -488,6 +488,34 @@ const api = {
     db.prepare('DELETE FROM blacklist WHERE id=?').run(Number((await readBody(req)).id));
     json(res, 200, { ok: true });
   },
+  'GET /api/calendar': async (req, res) => {
+    const month = monthOf(new URL(req.url, 'http://x').searchParams.get('month'));
+    json(res, 200, { month, events: calendarRows(month) });
+  },
+  'GET /api/admin/calendar': async (req, res) => { // 관리자 호스트는 /api/calendar를 쓸 수 없어 같은 내용을 따로 둔다
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const month = monthOf(new URL(req.url, 'http://x').searchParams.get('month'));
+    json(res, 200, { month, events: calendarRows(month) });
+  },
+  'POST /api/admin/calendar': async (req, res) => { // 등록·수정(id가 있으면 수정)
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const date = String(b.date || ''), title = String(b.title || '').trim().slice(0, 50), memo = String(b.memo || '').trim().slice(0, 500);
+    if (!dateOk(date)) return json(res, 400, { error: '날짜를 확인하세요.' });
+    if (!title) return json(res, 400, { error: '제목을 입력하세요.' });
+    const id = Number(b.id);
+    if (id) {
+      if (!db.prepare('UPDATE calendar_events SET date=?, title=?, memo=? WHERE id=?').run(date, title, memo || null, id).changes)
+        return json(res, 404, { error: 'not found' });
+      return json(res, 200, { id });
+    }
+    json(res, 201, { id: Number(db.prepare('INSERT INTO calendar_events (date,title,memo) VALUES (?,?,?)').run(date, title, memo || null).lastInsertRowid) });
+  },
+  'POST /api/admin/calendar/remove': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const r = db.prepare('DELETE FROM calendar_events WHERE id=?').run(Number((await readBody(req)).id));
+    json(res, r.changes ? 200 : 404, r.changes ? { ok: true } : { error: 'not found' });
+  },
   // 회원 목록(M-14): 연락처·이메일은 마스킹해서 내려보낸다(M-15)
   'GET /api/admin/members': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
@@ -698,6 +726,19 @@ async function handleAction(req, res, id, action) {
   notify();
   json(res, 200, { ok: true });
 }
+
+// ---- 행사·일정 캘린더 (M-17): 관리자가 등록하고 손님은 조회만 한다 ----
+db.exec(`CREATE TABLE IF NOT EXISTS calendar_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  title TEXT NOT NULL,
+  memo TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+const dateOk = (v) => /^\d{4}-\d\d-\d\d$/.test(v) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
+const monthOf = (q) => (/^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : new Date().toLocaleDateString('sv').slice(0, 7));
+const calendarRows = (month) => db.prepare('SELECT id, date, title, memo FROM calendar_events WHERE substr(date,1,7)=? ORDER BY date, id').all(month)
+  .map((e) => ({ id: e.id, date: e.date, title: e.title, memo: e.memo || '' }));
 
 // ---- 정기 대회 참가신청 (M-18) ----
 // 신청 상태: PENDING 입금 대기, CONFIRMED 확정(입금 확인), WAITLIST 대기(정원 초과), DELETED 삭제(취소·환불 메모)
@@ -946,7 +987,7 @@ const server = http.createServer(async (req, res) => {
       return await handleAction(req, res, Number(m[1]), m[2]);
 
     if (req.method === 'GET') {
-      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html' }[url.pathname];
+      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html' }[url.pathname];
       const file = page || url.pathname.slice(1);
       const full = path.join(PUBLIC, file);
       if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {

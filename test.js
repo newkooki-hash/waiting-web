@@ -370,6 +370,25 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).status, 400);
     assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).body.code, undefined);
     await call('POST', '/api/admin/intake/open', { open: true });
+    // --- 행사 일정 캘린더 ---
+    const cal = (b) => call('POST', '/api/admin/calendar', b);
+    assert.equal((await fetch(base + '/api/admin/calendar', { method: 'POST' })).status, 401);
+    assert.equal((await fetch(base + '/api/admin/calendar')).status, 401);
+    assert.equal((await cal({ date: '2026-02-30', title: '없는 날' })).status, 400);
+    assert.equal((await cal({ date: '2026-12-25', title: ' ' })).status, 400);
+    const ev1 = (await cal({ date: '2026-12-25', title: '성탄 이벤트', memo: '전 레인 할인' })).body.id;
+    await cal({ date: '2026-12-25', title: '챔프전 신청 마감' });
+    await cal({ date: '2027-01-02', title: '다음 달 행사' });
+    const dec = await (await fetch(base + '/api/calendar?month=2026-12')).json(); // 손님은 로그인 없이 조회
+    assert.deepEqual(dec.events.map((e) => [e.date, e.title, e.memo]), [['2026-12-25', '성탄 이벤트', '전 레인 할인'], ['2026-12-25', '챔프전 신청 마감', '']]);
+    assert.equal((await (await fetch(base + '/api/calendar?month=2027-01')).json()).events.length, 1);
+    assert.equal((await call('GET', '/api/admin/calendar?month=2026-12')).body.events.length, 2);
+    assert.equal((await cal({ id: ev1, date: '2026-12-26', title: '성탄 이벤트(수정)' })).status, 200);
+    assert.deepEqual((await call('GET', '/api/admin/calendar?month=2026-12')).body.events.map((e) => e.date), ['2026-12-25', '2026-12-26']);
+    assert.equal((await cal({ id: 99999, date: '2026-12-26', title: 'x' })).status, 404);
+    assert.equal((await call('POST', '/api/admin/calendar/remove', { id: ev1 })).status, 200);
+    assert.equal((await call('POST', '/api/admin/calendar/remove', { id: ev1 })).status, 404);
+    assert.equal((await (await fetch(base + '/api/calendar?month=bad')).json()).month, new Date().toLocaleDateString('sv').slice(0, 7)); // 잘못된 월은 이번 달
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);

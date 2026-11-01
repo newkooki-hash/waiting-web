@@ -70,6 +70,18 @@
   .actions input { width:110px; }
   .empty { padding:40px 16px; text-align:center; color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:var(--radius); }
 
+  /* 행사 캘린더 */
+  .cal { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+  .cal .dow { text-align:center; font-size:.8rem; color:var(--muted); padding:4px 0; }
+  .cal .day { min-height:76px; padding:6px; text-align:left; font-weight:400; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .cal .day.out { opacity:.4; }
+  .cal .day.today { border-color:var(--accent); }
+  .cal .day.sel { background:var(--accent-soft); border-color:var(--accent); }
+  .cal .day b { display:block; font-size:.85rem; }
+  .cal .day.sun b { color:var(--bad); }
+  .cal .ev { display:block; margin-top:2px; padding:0 4px; font-size:.72rem; line-height:1.35; border-radius:4px; background:var(--accent-soft); color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @media (max-width:720px) { .cal .day { min-height:56px; padding:3px; } .cal .ev { font-size:.65rem; } }
+
   /* 완료 표 */
   .wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); }
   table { width:100%; border-collapse:collapse; }
@@ -129,6 +141,7 @@
         <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
         <a href="#history" data-view="history">이력 조회</a>
         <a href="#tournaments" data-view="tournaments">대회 신청</a>
+        <a href="#calendar" data-view="calendar">행사 일정</a>
         <a href="#members" data-view="members">회원관리</a>
         <a href="#blacklist" data-view="blacklist">블랙리스트</a>
         <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
@@ -219,6 +232,29 @@
           <tbody id="tEntryRows"></tbody>
         </table></div>
         <div id="tEntryMsg" class="err" role="alert"></div>
+      </div>
+    </section>
+
+    <section id="v-calendar" hidden>
+      <h2>행사 일정</h2>
+      <p class="sub">날짜를 눌러 그날의 행사·일정을 등록합니다. 손님은 대기 접수 화면의 `행사 일정`에서 볼 수 있습니다.</p>
+      <div class="field" style="margin-bottom:12px">
+        <button id="cPrev" aria-label="이전 달">‹ 이전</button>
+        <strong id="cLabel" style="min-width:110px;text-align:center"></strong>
+        <button id="cNext" aria-label="다음 달">다음 ›</button>
+        <button id="cToday">오늘</button>
+      </div>
+      <div class="cal" id="cGrid"></div>
+      <div class="panel" style="margin-top:16px">
+        <h3 id="cDayTitle">날짜를 선택하세요</h3>
+        <div id="cDayList" style="margin-bottom:12px"></div>
+        <form id="cForm" class="field" hidden>
+          <input type="text" id="cTitle" placeholder="제목 (예: 챔프전 신청 마감)" maxlength="50" required style="width:240px">
+          <input type="text" id="cMemo" placeholder="메모 (선택)" maxlength="500" style="flex:1;min-width:200px">
+          <button class="primary" id="cSave">등록</button>
+          <button type="button" id="cCancel" hidden>수정 취소</button>
+        </form>
+        <div id="cMsg" class="err" role="alert"></div>
       </div>
     </section>
 
@@ -322,7 +358,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'tournaments', 'members', 'blacklist', 'intake'];
+const VIEWS = ['queue', 'done', 'history', 'tournaments', 'calendar', 'members', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -339,7 +375,71 @@ function route() {
   if (v === 'blacklist') loadBlacklist();
   if (v === 'members') loadMembers();
   if (v === 'tournaments') loadTournaments();
+  if (v === 'calendar') loadCalendar();
 }
+
+// 행사 캘린더
+let cMonth = new Date().toLocaleDateString('sv').slice(0, 7), cDay = '', cEvents = [], cEditId = null;
+const cShift = (m, n) => { const d = new Date(Number(m.slice(0, 4)), Number(m.slice(5)) - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+async function loadCalendar() {
+  const r = await fetch('/api/admin/calendar?month=' + cMonth);
+  if (!r.ok) return;
+  cEvents = (await r.json()).events;
+  const [y, mo] = cMonth.split('-').map(Number);
+  $('cLabel').textContent = `${y}년 ${mo}월`;
+  const today = new Date().toLocaleDateString('sv');
+  const first = new Date(y, mo - 1, 1), start = new Date(y, mo - 1, 1 - first.getDay());
+  let html = ['일', '월', '화', '수', '목', '금', '토'].map((d) => `<div class="dow">${d}</div>`).join('');
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    if (i % 7 === 0 && i >= 35 && d.getMonth() !== mo - 1) break; // 마지막 줄이 다음 달뿐이면 생략
+    const key = d.toLocaleDateString('sv');
+    const evs = cEvents.filter((e) => e.date === key);
+    html += `<button class="day${d.getMonth() !== mo - 1 ? ' out' : ''}${key === today ? ' today' : ''}${key === cDay ? ' sel' : ''}${d.getDay() === 0 ? ' sun' : ''}" data-date="${key}">
+      <b>${d.getDate()}</b>${evs.slice(0, 3).map((e) => `<span class="ev">${esc(e.title)}</span>`).join('')}${evs.length > 3 ? `<span class="ev">+${evs.length - 3}</span>` : ''}</button>`;
+  }
+  $('cGrid').innerHTML = html;
+  drawDay();
+}
+function resetCForm() { cEditId = null; $('cForm').reset(); $('cSave').textContent = '등록'; $('cCancel').hidden = true; }
+function drawDay() {
+  $('cForm').hidden = !cDay;
+  $('cDayTitle').textContent = cDay ? `${Number(cDay.slice(5, 7))}월 ${Number(cDay.slice(8))}일 일정` : '날짜를 선택하세요';
+  const evs = cEvents.filter((e) => e.date === cDay);
+  $('cDayList').innerHTML = !cDay ? '' : evs.length ? evs.map((e) => `
+    <div class="field" data-id="${e.id}" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1"><strong>${esc(e.title)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</div>
+      <button data-c="edit">수정</button><button class="danger" data-c="remove">삭제</button>
+    </div>`).join('') : '<div class="meta">등록된 일정이 없습니다.</div>';
+}
+$('cGrid').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button[data-date]');
+  if (!b) return;
+  cDay = b.dataset.date; resetCForm(); $('cMsg').textContent = '';
+  if (cDay.slice(0, 7) !== cMonth) { cMonth = cDay.slice(0, 7); return loadCalendar(); }
+  loadCalendar();
+});
+$('cPrev').onclick = () => { cMonth = cShift(cMonth, -1); cDay = ''; resetCForm(); loadCalendar(); };
+$('cNext').onclick = () => { cMonth = cShift(cMonth, 1); cDay = ''; resetCForm(); loadCalendar(); };
+$('cToday').onclick = () => { cMonth = new Date().toLocaleDateString('sv').slice(0, 7); cDay = new Date().toLocaleDateString('sv'); resetCForm(); loadCalendar(); };
+$('cCancel').onclick = resetCForm;
+$('cDayList').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-c]');
+  if (!btn) return;
+  const id = Number(btn.closest('[data-id]').dataset.id), e = cEvents.find((x) => x.id === id);
+  if (btn.dataset.c === 'edit') {
+    cEditId = id; $('cTitle').value = e.title; $('cMemo').value = e.memo; $('cSave').textContent = '수정 저장'; $('cCancel').hidden = false; $('cTitle').focus();
+  } else if (confirm(`'${e.title}' 일정을 삭제할까요?`)) {
+    await post('/api/admin/calendar/remove', { id }); resetCForm(); loadCalendar();
+  }
+});
+$('cForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('cMsg').textContent = '';
+  const r = await post('/api/admin/calendar', { id: cEditId, date: cDay, title: $('cTitle').value, memo: $('cMemo').value });
+  if (!r.ok) return ($('cMsg').textContent = r.body.error || '저장에 실패했습니다.');
+  resetCForm(); loadCalendar();
+});
 
 // 정기 대회 신청
 const T_STATUS = { PENDING: '입금 대기', CONFIRMED: '확정', WAITLIST: '대기', DELETED: '삭제' };
