@@ -22,6 +22,8 @@
   .sso { display:block; text-align:center; text-decoration:none; padding:14px; margin-top:10px; border-radius:8px; font-weight:600; }
   .sso.kakao { background:#fee500; color:#191919; }
   .sso.naver { background:#03c75a; color:#fff; }
+  label.chk { display:flex; gap:10px; align-items:center; color:var(--text); font-size:.95rem; margin:12px 0 0; }
+  label.chk input { width:20px; height:20px; flex:none; }
   #userbar[hidden] { display:none; }
   .err { color:#d92d20; margin-top:12px; min-height:1.4em; }
   .big { font-size:3rem; font-weight:700; text-align:center; margin:8px 0; }
@@ -49,6 +51,15 @@
   <div id="userbar" class="muted" hidden style="display:flex;justify-content:space-between;margin-bottom:8px">
     <span id="me"></span><a href="#" id="logout">로그아웃</a>
   </div>
+
+  <section id="consent" class="card" hidden>
+    <p style="margin-top:0"><strong>서비스 이용 동의</strong></p>
+    <label class="chk" id="cTermsRow"><input type="checkbox" id="cTerms"> [필수] <a href="/terms" target="_blank" rel="noopener">이용약관</a>에 동의합니다</label>
+    <label class="chk" id="cPrivacyRow"><input type="checkbox" id="cPrivacy"> [필수] <a href="/privacy" target="_blank" rel="noopener">개인정보 수집·이용</a>에 동의합니다</label>
+    <label class="chk"><input type="checkbox" id="cMarketing"> [선택] 이벤트·행사 소식 수신에 동의합니다</label>
+    <button type="button" id="cSubmit">동의하고 계속하기</button>
+    <div id="cerr" class="err" role="alert"></div>
+  </section>
 
   <section id="verify" class="card" hidden>
     <p class="muted" style="margin-top:0">대기 호출을 받으려면 휴대전화 인증이 필요합니다. 한 번만 인증하면 됩니다.</p>
@@ -118,9 +129,12 @@ function showForm() {
     if (logged) $('me').textContent = me.user.name + '님';
     return;
   }
+  const needConsent = logged && (me.consent?.missing || []).length > 0;
+  $('consent').hidden = !needConsent;
+  if (needConsent) showConsent();
   const verified = logged && !!me.user.phone;
-  $('login').hidden = logged; $('verify').hidden = !logged || verified;
-  $('form').hidden = !verified; $('status').hidden = true;
+  $('login').hidden = logged || needConsent; $('verify').hidden = !logged || verified || needConsent;
+  $('form').hidden = !verified || needConsent; $('status').hidden = true;
   $('userbar').hidden = !logged;
   if (logged) {
     $('me').textContent = me.user.name + '님'; if (!$('name').value) $('name').value = me.user.name;
@@ -173,10 +187,28 @@ $('form').addEventListener('submit', async (ev) => {
   });
   const b = await r.json();
   if (r.status === 403 && b.code === 'PHONE_REQUIRED') { await loadMe(); return showForm(); }
-  if (r.status === 401 || b.code === 'INTAKE_CLOSED' || b.code === 'QR_REQUIRED') { await loadMe(); return showForm(); }
+  if (r.status === 401 || b.code === 'INTAKE_CLOSED' || b.code === 'QR_REQUIRED' || b.code === 'CONSENT_REQUIRED') { await loadMe(); return showForm(); }
   if (r.ok || r.status === 409 && b.token) { token = b.token; store.set(token); return refresh(); }
   $('err').textContent = b.error || '접수에 실패했습니다.';
 });
+
+
+function showConsent() {
+  const miss = me.consent?.missing || [];
+  $('cTermsRow').hidden = !miss.includes('terms'); $('cPrivacyRow').hidden = !miss.includes('privacy');
+  $('cMarketing').checked = !!me.consent?.marketing;
+}
+$('cSubmit').onclick = async () => {
+  $('cerr').textContent = '';
+  const miss = me.consent?.missing || [];
+  const body = { marketing: $('cMarketing').checked };
+  if (miss.includes('terms')) body.terms = $('cTerms').checked;
+  if (miss.includes('privacy')) body.privacy = $('cPrivacy').checked;
+  const r = await fetch('/api/consent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) return ($('cerr').textContent = b.error || '저장에 실패했습니다.');
+  await loadMe(); showForm();
+};
 
 async function postJson(url, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

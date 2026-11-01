@@ -29,6 +29,8 @@
   .badge.ok { color:var(--ok); }
   .badge.wait { color:var(--accent); }
   .info { white-space:pre-wrap; margin-top:10px; padding:10px; border-radius:8px; background:var(--bg); font-size:.9rem; }
+  label.chk { display:flex; gap:10px; align-items:center; color:var(--text); font-size:.95rem; margin:12px 0 0; }
+  label.chk input { width:20px; height:20px; flex:none; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -45,6 +47,15 @@
   <div id="userbar" class="muted" hidden style="display:flex;justify-content:space-between;margin-bottom:8px">
     <span id="me"></span><a href="#" id="logout">로그아웃</a>
   </div>
+
+  <section id="consent" class="card" hidden>
+    <p style="margin-top:0"><strong>서비스 이용 동의</strong></p>
+    <label class="chk" id="cTermsRow"><input type="checkbox" id="cTerms"> [필수] <a href="/terms" target="_blank" rel="noopener">이용약관</a>에 동의합니다</label>
+    <label class="chk" id="cPrivacyRow"><input type="checkbox" id="cPrivacy"> [필수] <a href="/privacy" target="_blank" rel="noopener">개인정보 수집·이용</a>에 동의합니다</label>
+    <label class="chk"><input type="checkbox" id="cMarketing"> [선택] 이벤트·행사 소식 수신에 동의합니다</label>
+    <button type="button" id="cSubmit">동의하고 계속하기</button>
+    <div id="cerr" class="err" role="alert"></div>
+  </section>
 
   <section id="verify" class="card" hidden>
     <p class="muted" style="margin-top:0">신청 확인과 안내를 위해 휴대전화 인증이 필요합니다. 한 번만 인증하면 됩니다.</p>
@@ -91,6 +102,24 @@ async function post(url, body) {
   return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
 }
 
+
+function showConsent() {
+  const miss = me.consent?.missing || [];
+  $('cTermsRow').hidden = !miss.includes('terms'); $('cPrivacyRow').hidden = !miss.includes('privacy');
+  $('cMarketing').checked = !!me.consent?.marketing;
+}
+$('cSubmit').onclick = async () => {
+  $('cerr').textContent = '';
+  const miss = me.consent?.missing || [];
+  const body = { marketing: $('cMarketing').checked };
+  if (miss.includes('terms')) body.terms = $('cTerms').checked;
+  if (miss.includes('privacy')) body.privacy = $('cPrivacy').checked;
+  const r = await fetch('/api/consent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) return ($('cerr').textContent = b.error || '저장에 실패했습니다.');
+  load();
+};
+
 let profileLoaded = false;
 async function loadProfile() {
   const r = await fetch('/api/tournament-profile');
@@ -117,13 +146,16 @@ $('saveProfile').onclick = async () => {
 async function load() {
   me = await (await fetch('/api/me')).json();
   const logged = !!me.user, verified = logged && !!me.user.phone;
-  $('login').hidden = logged; $('verify').hidden = !logged || verified; $('userbar').hidden = !logged;
+  const needConsent = logged && (me.consent?.missing || []).length > 0;
+  $('consent').hidden = !needConsent;
+  if (needConsent) showConsent();
+  $('login').hidden = logged; $('verify').hidden = !logged || verified || needConsent; $('userbar').hidden = !logged;
   if (logged) $('me').textContent = me.user.name + '님';
   else $('providers').innerHTML = me.providers.map((p) => `<a class="sso ${p.id}" href="/auth/${p.id}?next=tournament">${p.label}로 시작하기</a>`).join('')
     || '<div class="muted">로그인 설정이 아직 되어 있지 않습니다.</div>';
 
-  $('profile').hidden = !verified;
-  if (verified) await loadProfile();
+  $('profile').hidden = !verified || needConsent;
+  if (verified && !needConsent) await loadProfile();
 
   const { tournaments } = await (await fetch('/api/tournaments')).json();
   $('list').innerHTML = tournaments.length ? tournaments.map((t) => {

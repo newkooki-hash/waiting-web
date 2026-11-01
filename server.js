@@ -319,6 +319,7 @@ const api = {
       user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
       activeToken: active?.token || null,
       intake: { open: intakeOpen(), allowed: hasIntakeToken(req), window: outsideWindow() },
+      consent: u ? { missing: missingConsents(u.id), marketing: !!db.prepare('SELECT agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(u.id, 'marketing')?.agreed } : null,
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
     });
   },
@@ -330,6 +331,7 @@ const api = {
   'POST /api/phone/send': async (req, res) => {
     const user = currentUser(req);
     if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    if (consentBlocked(res, user.id)) return;
     const b = await readBody(req);
     // 대회 신청 기간에는 QR 없이도 번호 인증을 받을 수 있다(소셜 로그인은 필요, 발송 한도는 동일)
     if (!(b.for === 'tournament' && tournamentApplying()) && intakeBlocked(req, res)) return;
@@ -386,6 +388,7 @@ const api = {
     if (!name) return json(res, 400, { error: '이름을 입력하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    if (consentBlocked(res, user.id)) return;
     if (isBlacklisted(phone)) return json(res, 403, BLACKLISTED);
     const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, phone);
     if (dup) return json(res, 409, { error: '이미 접수된 대기가 있습니다.', token: dup.token });
@@ -488,6 +491,48 @@ const api = {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     db.prepare('DELETE FROM blacklist WHERE id=?').run(Number((await readBody(req)).id));
     json(res, 200, { ok: true });
+  },
+  'GET /api/policy': async (req, res) => {
+    const type = new URL(req.url, 'http://x').searchParams.get('type');
+    if (!POLICY_TYPES[type]) return json(res, 404, { error: 'not found' });
+    const p = policyOf(type);
+    json(res, 200, { type, title: POLICY_TYPES[type], body: p.body, version: p.version, updatedAt: p.updated_at });
+  },
+  'POST /api/consent': async (req, res) => { // 필수 약관 동의(현재 버전)와 마케팅 수신 선택
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    const b = await readBody(req);
+    const need = missingConsents(user.id);
+    if (need.some((t) => b[t] !== true)) return json(res, 400, { error: '필수 약관에 모두 동의해 주세요.' });
+    const ins = db.prepare('INSERT INTO consents (user_id,type,version,agreed) VALUES (?,?,?,?)');
+    need.forEach((t) => ins.run(user.id, t, policyOf(t).version, 1));
+    if (typeof b.marketing === 'boolean') {
+      const last = db.prepare('SELECT agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(user.id, 'marketing');
+      if (!last || !!last.agreed !== b.marketing) ins.run(user.id, 'marketing', 0, b.marketing ? 1 : 0); // 바뀐 때만 기록
+    }
+    json(res, 200, { ok: true });
+  },
+  'GET /api/admin/policies': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    json(res, 200, { policies: Object.keys(POLICY_TYPES).map((type) => ({ type, title: POLICY_TYPES[type], ...policyOf(type), consentVersion: policyOf(type).consent_version, updatedAt: policyOf(type).updated_at })) });
+  },
+  'POST /api/admin/policies': async (req, res) => { // 본문이 바뀌면 버전이 오른다. reconsent가 true일 때만 모든 회원이 다시 동의한다
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req, 2 * 1024 * 1024);
+    if (!POLICY_TYPES[b.type]) return json(res, 400, { error: '약관 종류를 확인하세요.' });
+    const body = String(b.body || '').trim().slice(0, 100000), cur = policyOf(b.type);
+    if (body === cur.body) return json(res, 200, { version: cur.version, changed: false });
+    const version = cur.version + 1;
+    const reconsent = !cur.version || b.reconsent === true; // 처음 등록하는 약관은 모두 동의해야 한다
+    const consentVersion = reconsent ? version : cur.consent_version;
+    db.prepare("INSERT INTO policies (type,body,version,consent_version,updated_at) VALUES (?,?,?,?,datetime('now','localtime')) ON CONFLICT(type) DO UPDATE SET body=excluded.body, version=excluded.version, consent_version=excluded.consent_version, updated_at=excluded.updated_at").run(b.type, body, version, consentVersion);
+    if (cur.version && b.notify !== false) { // 개정 안내 공지
+      const summary = String(b.summary || '').trim().slice(0, 1000) || '내용이 개정되었습니다. 자세한 내용은 아래 화면에서 확인해 주세요.';
+      const today = new Date().toLocaleDateString('sv');
+      db.prepare('INSERT INTO notices (date,title,body) VALUES (?,?,?)').run(today, `[${POLICY_TYPES[b.type]} 개정 안내]`,
+        `${summary}\n\n시행일: ${today}\n${reconsent ? '개정 내용에 대한 동의가 다시 필요합니다.\n' : ''}전문 보기: /${b.type}`);
+    }
+    json(res, 200, { version, changed: true, reconsent });
   },
   'GET /api/notices': async (req, res) => json(res, 200, { notices: noticeRows() }),
   'GET /api/banners': async (req, res) => json(res, 200, { banners: bannerIds() }),
@@ -624,6 +669,7 @@ const api = {
     if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
     if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' });
     const b = await readBody(req);
+    if (consentBlocked(res, user.id)) return;
     const birthDate = String(b.birthDate || '').trim(), gender = String(b.gender || '');
     if (!validDate(birthDate)) return json(res, 400, { error: '생년월일을 확인하세요.' });
     if (!GENDER_LABEL[gender]) return json(res, 400, { error: '성별을 선택하세요.' });
@@ -843,6 +889,41 @@ async function handleAction(req, res, id, action) {
   json(res, 200, { ok: true });
 }
 
+// ---- 이용약관·개인정보처리방침과 동의 이력 (C-11) ----
+// 약관 본문은 관리자가 쓰고, 내용이 바뀌면 버전이 올라간다. 본문이 비어 있는 약관은 동의를 요구하지 않는다.
+// 다시 동의를 받아야 하는 변경(수집 항목·이용 목적 변경 등)만 관리자가 '재동의 필요'로 저장한다.
+// 그 밖의 개정은 공지로 알리고 손님을 막지 않는다(consent_version이 그대로라 기존 동의가 유효).
+// 동의 기록은 지우지 않고 쌓는다(마지막 기록이 현재 상태).
+db.exec(`CREATE TABLE IF NOT EXISTS policies (
+  type TEXT PRIMARY KEY,
+  body TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS consents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  agreed INTEGER NOT NULL,
+  agreed_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+try { db.exec('ALTER TABLE policies ADD COLUMN consent_version INTEGER NOT NULL DEFAULT 0'); db.exec('UPDATE policies SET consent_version=version'); } catch {}
+const POLICY_TYPES = { terms: '이용약관', privacy: '개인정보처리방침' };
+const policyOf = (type) => db.prepare('SELECT body, version, consent_version, updated_at FROM policies WHERE type=?').get(type) || { body: '', version: 0, consent_version: 0, updated_at: null };
+// 아직 현재 버전에 동의하지 않은 필수 약관 목록
+const missingConsents = (userId) => Object.keys(POLICY_TYPES).filter((type) => {
+  const p = policyOf(type);
+  if (!p.body) return false;
+  const last = db.prepare('SELECT version, agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(userId, type);
+  return !(last && last.agreed && last.version >= p.consent_version); // 재동의가 필요한 버전 이후에 동의했으면 유효
+});
+const consentBlocked = (res, userId) => {
+  if (!missingConsents(userId).length) return false;
+  json(res, 403, { error: '이용약관과 개인정보 처리 동의가 필요합니다.', code: 'CONSENT_REQUIRED' });
+  return true;
+};
+
 // ---- 공지사항·이벤트 이미지 (M-25). 전체 푸시는 알림톡 보류로 제외 ----
 db.exec(`CREATE TABLE IF NOT EXISTS notices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -969,6 +1050,7 @@ async function handleTournaments(req, res, url) {
     if (!t) return json(res, 404, { error: 'not found' }), true;
     if (m[2] === 'apply') {
       if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' }), true;
+      if (consentBlocked(res, user.id)) return true;
       if (isBlacklisted(user.phone)) return json(res, 403, BLACKLISTED), true;
       if (!isFullMember(user.id, user.phone)) return json(res, 403, NOT_FULL), true;
       if (applyWindow(t) !== 'open') return json(res, 403, { error: '신청 기간이 아닙니다.', code: 'NOT_OPEN' }), true;
@@ -1139,7 +1221,7 @@ const server = http.createServer(async (req, res) => {
       return await handleAction(req, res, Number(m[1]), m[2]);
 
     if (req.method === 'GET') {
-      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html', '/notice': 'notice.html' }[url.pathname];
+      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html', '/notice': 'notice.html', '/terms': 'policy.html', '/privacy': 'policy.html' }[url.pathname];
       const file = page || url.pathname.slice(1);
       const full = path.join(PUBLIC, file);
       if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {

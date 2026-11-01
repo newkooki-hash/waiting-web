@@ -451,6 +451,55 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.ok(st.hours.every((h) => h.hour >= 0 && h.hour <= 23) && st.weekdays.every((w) => w.dow >= 0 && w.dow <= 6));
     const none = (await call('GET', '/api/admin/stats?from=2000-01-01&to=2000-01-31')).body;
     assert.deepEqual([none.total.teams, none.total.avgWait, none.days.length], [0, null, 0]);
+    // --- 이용약관·개인정보처리방침 동의 ---
+    const policy = (type, body) => call('POST', '/api/admin/policies', { type, body });
+    assert.equal((await fetch(base + '/api/admin/policies')).status, 401);
+    assert.equal((await fetch(base + '/api/admin/policies', { method: 'POST' })).status, 401);
+    assert.equal((await policy('etc', 'x')).status, 400);
+    assert.deepEqual((await call('GET', '/api/me')).body.consent.missing, []); // 약관이 비어 있으면 동의를 요구하지 않는다
+    assert.equal((await policy('terms', '제1조 목적')).body.version, 1);
+    assert.equal((await policy('terms', '제1조 목적')).body.changed, false); // 같은 내용은 버전이 오르지 않는다
+    assert.equal((await policy('privacy', '수집 항목: 이름, 휴대전화번호')).body.version, 1);
+    const pub1 = (await (await fetch(base + '/api/policy?type=terms')).json());
+    assert.deepEqual([pub1.title, pub1.body, pub1.version], ['이용약관', '제1조 목적', 1]);
+    assert.equal((await fetch(base + '/api/policy?type=etc')).status, 404);
+    assert.deepEqual((await call('GET', '/api/me')).body.consent.missing, ['terms', 'privacy']);
+    for (const [method, url, body] of [['POST', '/api/phone/send', { phone: '01012340000' }], ['POST', '/api/entries', { partySize: 1 }], ['POST', `/api/tournaments/${tid}/apply`], ['POST', '/api/tournament-profile', { birthDate: '1991-01-02', gender: 'm' }]]) {
+      assert.equal((await call(method, url, body)).body.code, 'CONSENT_REQUIRED', url);
+    }
+    assert.equal((await call('POST', '/api/consent', { terms: true, marketing: true })).status, 400); // 필수 약관 하나라도 빠지면 거절
+    assert.equal((await call('POST', '/api/consent', { terms: true, privacy: false })).status, 400);
+    assert.equal((await fetch(base + '/api/consent', { method: 'POST' })).status, 401);
+    assert.equal((await call('POST', '/api/consent', { terms: true, privacy: true, marketing: true })).status, 200);
+    const consented = (await call('GET', '/api/me')).body.consent;
+    assert.deepEqual([consented.missing, consented.marketing], [[], true]);
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1991-01-02', gender: 'm' })).status, 200); // 동의 후에는 통과
+    // 일반 개정은 공지로 알리고 다시 동의를 요구하지 않는다
+    const noticesBefore = (await call('GET', '/api/admin/notices')).body.notices.length;
+    const rev = (await call('POST', '/api/admin/policies', { type: 'terms', body: '제1조 목적 (개정)', summary: '제1조 문구를 정리했습니다.' })).body;
+    assert.deepEqual([rev.version, rev.reconsent], [2, false]);
+    assert.deepEqual((await call('GET', '/api/me')).body.consent.missing, []);
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1991-01-02', gender: 'm' })).status, 200);
+    const notices2 = (await call('GET', '/api/admin/notices')).body.notices;
+    assert.equal(notices2.length, noticesBefore + 1); // 개정 안내 공지가 자동 등록된다
+    const guide = notices2.find((n) => n.title === '[이용약관 개정 안내]');
+    assert.ok(guide.body.includes('제1조 문구를 정리했습니다.') && guide.body.includes('시행일') && !guide.body.includes('다시 필요'));
+    assert.equal((await call('POST', '/api/admin/policies', { type: 'terms', body: '제1조 목적 (개정2)', notify: false })).body.version, 3);
+    assert.equal((await call('GET', '/api/admin/notices')).body.notices.length, noticesBefore + 1); // notify:false면 공지 없음
+    // 신규 가입자도 현재 버전에 동의하면 이후 일반 개정에는 막히지 않는다(기준 버전 비교)
+    assert.equal((await call('GET', '/api/admin/policies')).body.policies.find((p) => p.type === 'terms').consentVersion, 1);
+    // 수집 항목 변경처럼 중요한 개정은 재동의를 받는다
+    const rev2 = (await call('POST', '/api/admin/policies', { type: 'terms', body: '제1조 목적 (중요 개정)', reconsent: true })).body;
+    assert.deepEqual([rev2.version, rev2.reconsent], [4, true]);
+    assert.deepEqual((await call('GET', '/api/me')).body.consent.missing, ['terms']);
+    assert.ok((await call('GET', '/api/admin/notices')).body.notices.some((n) => n.body.includes('다시 필요')));
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1991-01-02', gender: 'm' })).body.code, 'CONSENT_REQUIRED');
+    assert.equal((await call('POST', '/api/consent', { terms: true, marketing: false })).status, 200); // 개인정보는 이미 동의한 버전이라 생략
+    const afterRevise = (await call('GET', '/api/me')).body.consent;
+    assert.deepEqual([afterRevise.missing, afterRevise.marketing], [[], false]); // 마케팅 수신 철회가 반영된다
+    assert.equal((await policy('terms', '')).status, 200); // 다른 시험에 영향이 없도록 비운다
+    assert.equal((await policy('privacy', '')).status, 200);
+    assert.deepEqual((await call('GET', '/api/me')).body.consent.missing, []);
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);
