@@ -51,7 +51,7 @@
   button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
   button.call { background:var(--call-soft); border-color:var(--call); color:var(--call); }
   button.danger { color:var(--bad); }
-  input[type=text], input[type=time], input[type=password] { font:inherit; padding:9px 10px; min-height:40px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  input[type=text], input[type=time], input[type=password], input[type=date] { font:inherit; padding:9px 10px; min-height:40px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
   .err { color:var(--bad); min-height:1.4em; }
 
   /* 대기 카드 목록 */
@@ -126,8 +126,10 @@
       <nav aria-label="관리 메뉴">
         <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
         <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
+        <a href="#history" data-view="history">이력 조회</a>
         <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
       </nav>
+      <button id="logout" style="margin-left:auto">로그아웃</button>
     </div>
   </header>
 
@@ -135,6 +137,14 @@
     <section id="v-queue" hidden>
       <h2>대기 목록</h2>
       <p class="sub">호출하거나 레인을 입력해 배정합니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
+      <form id="manual" class="panel field" style="margin-bottom:12px">
+        <strong>수기 등록</strong>
+        <input type="text" id="mName" placeholder="이름" maxlength="20" required style="width:120px">
+        <input type="text" id="mPhone" placeholder="전화 (선택)" inputmode="numeric" style="width:150px">
+        <input type="text" id="mParty" placeholder="인원" inputmode="numeric" required style="width:70px">
+        <input type="text" id="mMemo" placeholder="메모 (선택)" maxlength="200" style="width:180px">
+        <button class="primary">등록</button>
+      </form>
       <div id="rows" class="list"></div>
       <div id="msg" class="err" role="alert"></div>
     </section>
@@ -146,6 +156,25 @@
         <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정 시각</th><th></th></tr></thead>
         <tbody id="done"></tbody>
       </table></div>
+    </section>
+
+    <section id="v-history" hidden>
+      <h2>이력 조회</h2>
+      <p class="sub">접수일 기준으로 찾습니다. 취소·종료된 건도 포함됩니다.</p>
+      <form id="hForm" class="panel field" style="margin-bottom:12px">
+        <input type="date" id="hFrom" aria-label="시작일">
+        <span>~</span>
+        <input type="date" id="hTo" aria-label="종료일">
+        <input type="text" id="hQ" placeholder="이름 또는 전화" style="width:150px">
+        <input type="text" id="hLane" placeholder="레인" inputmode="numeric" style="width:80px">
+        <button class="primary">조회</button>
+        <button type="button" id="hCsv">엑셀(CSV) 내려받기</button>
+      </form>
+      <div class="wrap"><table>
+        <thead><tr><th>접수</th><th>이름</th><th>전화</th><th>인원</th><th>상태</th><th>레인</th><th>대기</th><th>경로</th><th>메모·사유</th></tr></thead>
+        <tbody id="hRows"></tbody>
+      </table></div>
+      <div id="hCount" class="hint"></div>
     </section>
 
     <section id="v-intake" hidden>
@@ -195,7 +224,8 @@
 const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const VIEWS = ['queue', 'done', 'intake'];
+const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
+const VIEWS = ['queue', 'done', 'history', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -208,7 +238,34 @@ function route() {
   const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'queue';
   for (const n of VIEWS) $('v-' + n).hidden = n !== v;
   document.querySelectorAll('nav a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+  if (v === 'history') loadHistory();
 }
+
+const today = () => new Date().toLocaleDateString('sv');
+const historyQuery = () => new URLSearchParams({ from: $('hFrom').value, to: $('hTo').value || $('hFrom').value, q: $('hQ').value, lane: $('hLane').value });
+async function loadHistory() {
+  if (!$('hFrom').value) $('hFrom').value = $('hTo').value = today();
+  const r = await fetch('/api/admin/history?' + historyQuery());
+  if (!r.ok) return;
+  const { entries } = await r.json();
+  $('hRows').innerHTML = entries.length ? entries.map((e) => `
+    <tr><td>${esc(e.createdAt.slice(5, 16))}</td><td><strong>${esc(e.name)}</strong></td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+    <td>${STATUS[e.status]}</td><td>${esc(e.lanes)}</td><td>${e.waitMin === '' ? '' : e.waitMin + '분'}</td>
+    <td>${e.manual ? '수기' : 'QR'}</td><td>${esc([e.memo, e.cancelReason && '취소: ' + e.cancelReason].filter(Boolean).join(' / '))}</td></tr>`).join('')
+    : '<tr><td colspan="9" class="empty" style="border:0">조건에 맞는 이력이 없습니다.</td></tr>';
+  $('hCount').textContent = `${entries.length}건` + (entries.length >= 2000 ? ' (최대 2000건까지 표시)' : '');
+}
+$('hForm').addEventListener('submit', (ev) => { ev.preventDefault(); loadHistory(); });
+$('hCsv').onclick = () => { if (!$('hFrom').value) $('hFrom').value = $('hTo').value = today(); location.href = '/api/admin/history?format=csv&' + historyQuery(); };
+$('logout').onclick = async () => { await post('/api/admin/logout'); location.reload(); };
+$('manual').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('msg').textContent = '';
+  const r = await post('/api/admin/entries', { name: $('mName').value, phone: $('mPhone').value, partySize: $('mParty').value, memo: $('mMemo').value });
+  if (!r.ok) return ($('msg').textContent = r.body.error || '등록에 실패했습니다.');
+  ev.target.reset();
+  load();
+});
 window.addEventListener('hashchange', route);
 
 function drawIntake() {
@@ -241,26 +298,27 @@ async function load() {
   $('cntWait').textContent = waitingList.length; $('cntDone').textContent = done.length;
 
   $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
-    <div class="row ${e.status}" data-id="${e.id}">
+    <div class="row ${e.status}" data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
       <div class="pos">${i + 1}<small>순번</small></div>
       <div>
-        <div class="who">${esc(e.name)} · ${e.partySize}명<span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span></div>
-        <div class="meta"><span>${esc(e.phone)}</span><span>${esc(e.createdAt.slice(11, 16))} 접수</span></div>
+        <div class="who">${esc(e.name)} · ${e.partySize}명<span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span>${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</div>
+        <div class="meta"><span>${esc(e.phone)}</span><span>${esc(e.createdAt.slice(11, 16))} 접수</span>${e.memo ? `<span>메모: ${esc(e.memo)}</span>` : ''}</div>
       </div>
       <div class="actions">${actions(e)}</div>
     </div>`).join('') : '<div class="empty">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
 
   $('done').innerHTML = done.length ? done.map((e) => `
-    <tr data-id="${e.id}">
-      <td><strong>${esc(e.name)}</strong></td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+    <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
+      <td><strong>${esc(e.name)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
       <td><span class="lanechip">${esc(e.lanes)}번</span></td>
       <td>${esc((e.assignedAt || '').slice(11, 16))}</td>
-      <td><button class="danger" data-act="cancel">배정 취소</button></td>
+      <td class="actions"><button data-act="edit">수정</button><button class="danger" data-act="cancel">배정 취소</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="empty" style="border:0">오늘 배정한 팀이 없습니다.</td></tr>';
 }
 
 function actions(e) {
   return `${e.status === 'WAITING' ? '<button class="call" data-act="call">호출</button>' : ''}
+    <button data-act="edit">수정</button>
     <input type="text" placeholder="레인 5,6" aria-label="레인 번호">
     <button class="primary" data-act="assign">배정</button>
     <button class="danger" data-act="cancel">취소</button>`;
@@ -270,9 +328,22 @@ document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button[data-act]');
   if (!btn) return;
   const row = btn.closest('[data-id]'), act = btn.dataset.act;
-  if (act === 'cancel' && !confirm('취소할까요?')) return;
+  let body = {};
+  if (act === 'assign') body = { lanes: row.querySelector('input')?.value };
+  if (act === 'cancel') { // 확인 창에서 취소하면 중단, 사유는 비워도 된다
+    const reason = prompt('취소 사유를 입력하세요 (선택)', '');
+    if (reason === null) return;
+    body = { reason };
+  }
+  if (act === 'edit') {
+    const party = prompt('인원 (1~8)', row.dataset.party);
+    if (party === null) return;
+    const memo = prompt('메모', row.dataset.memo);
+    if (memo === null) return;
+    body = { partySize: party, memo };
+  }
   $('msg').textContent = '';
-  const r = await post(`/api/admin/entries/${row.dataset.id}/${act}`, act === 'assign' ? { lanes: row.querySelector('input')?.value } : {});
+  const r = await post(`/api/admin/entries/${row.dataset.id}/${act}`, body);
   if (!r.ok) $('msg').textContent = r.body.error || '처리에 실패했습니다.';
   load();
 });

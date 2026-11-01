@@ -149,6 +149,42 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', `/api/entries/${a.body.token}/cancel`)).status, 409); // 이미 배정됨
     // 배정이 끝나면 다시 접수 가능
     assert.equal((await call('POST', '/api/entries', { partySize: 1 })).status, 201);
+    // --- 수기 등록·인원/메모 수정·취소 사유·이력 조회 ---
+    const manual = (b) => call('POST', '/api/admin/entries', b);
+    assert.equal((await manual({ name: '', partySize: 2 })).status, 400);
+    assert.equal((await manual({ name: '김수기', phone: '123', partySize: 2 })).status, 400);
+    assert.equal((await manual({ name: '김수기', partySize: 9 })).status, 400);
+    assert.equal((await manual({ name: '김수기', phone: '01055556666', partySize: 3, memo: '신발 3' })).status, 201);
+    assert.equal((await manual({ name: '김수기', phone: '010-5555-6666', partySize: 3 })).status, 409); // 대기 중 중복
+    assert.equal((await manual({ name: '번호없음', partySize: 1 })).status, 201); // 전화는 선택
+    const live = (await call('GET', '/api/admin/entries')).body.entries;
+    const m = live.find((e) => e.name === '김수기');
+    assert.ok(m.manual && m.memo === '신발 3');
+    assert.equal((await call('POST', `/api/admin/entries/${m.id}/edit`, { partySize: 9 })).status, 400);
+    assert.equal((await call('POST', `/api/admin/entries/${m.id}/edit`, { partySize: 4, memo: '' })).status, 200);
+    const edited = (await call('GET', '/api/admin/entries')).body.entries.find((e) => e.id === m.id);
+    assert.equal(edited.partySize, 4);
+    assert.equal(edited.memo, '');
+    assert.equal((await call('POST', `/api/admin/entries/${m.id}/cancel`, { reason: '연락 두절' })).status, 200);
+    assert.equal((await call('POST', `/api/admin/entries/${m.id}/edit`, { partySize: 2 })).status, 409); // 취소 건은 수정 불가
+    const hist = (await call('GET', '/api/admin/history')).body.entries;
+    const hc = hist.find((e) => e.id === m.id);
+    assert.ok(hc.manual && hc.status === 'CANCELED' && hc.cancelReason === '연락 두절');
+    assert.equal(hist.find((e) => e.id === ida).waitMin, 0);
+    assert.deepEqual((await call('GET', '/api/admin/history?lane=5')).body.entries.map((e) => e.id), [ida]);
+    assert.deepEqual((await call('GET', '/api/admin/history?lane=1')).body.entries, []);
+    assert.equal((await call('GET', '/api/admin/history?q=김수기')).body.entries.length, 1);
+    assert.equal((await call('GET', '/api/admin/history?from=2000-01-01')).body.entries.length, 0);
+    const csv = await fetch(base + '/api/admin/history?format=csv', { headers: { cookie: `admin=${jar.admin}` } });
+    assert.match(csv.headers.get('content-disposition'), /attachment/);
+    assert.deepEqual([...new Uint8Array(await csv.arrayBuffer()).slice(0, 3)], [0xEF, 0xBB, 0xBF]); // 엑셀용 BOM
+    assert.equal((await fetch(base + '/api/admin/history')).status, 401);
+    assert.equal((await fetch(base + '/api/admin/entries', { method: 'POST' })).status, 401);
+    // 로그아웃하면 세션이 무효가 된다
+    const sess = jar.admin;
+    assert.equal((await call('POST', '/api/admin/logout')).status, 200);
+    assert.equal((await fetch(base + '/api/admin/entries', { headers: { cookie: `admin=${sess}` } })).status, 401);
+    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
     // --- 인증번호 발송 한도: 한 번호로 다른 계정이 연달아 요청하면 막는다 ---
     const login = async (id) => {
       mockId = id;

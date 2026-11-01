@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS entries (
 );`);
 try { db.exec('ALTER TABLE entries ADD COLUMN assigned_at TEXT'); } catch {} // 기존 DB 보강
 try { db.exec('ALTER TABLE entries ADD COLUMN user_id INTEGER'); } catch {}
+try { db.exec('ALTER TABLE entries ADD COLUMN memo TEXT'); } catch {}
+try { db.exec('ALTER TABLE entries ADD COLUMN cancel_reason TEXT'); } catch {}
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -308,20 +310,86 @@ const api = {
       entries: rows.map((e) => ({
         id: e.id, name: e.name, phone: e.phone, partySize: e.party_size,
         status: e.status, lanes: e.lanes, createdAt: e.created_at, assignedAt: e.assigned_at,
+        manual: e.user_id === null, memo: e.memo || '',
       })),
     });
+  },
+  'POST /api/admin/logout': async (req, res) => {
+    db.prepare('DELETE FROM admin_sessions WHERE token=?').run(cookie(req, 'admin') || '');
+    res.setHeader('Set-Cookie', `admin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${SECURE}`);
+    json(res, 200, { ok: true });
+  },
+  // 수기 등록(M-7): 스마트폰을 쓰기 어려운 손님. 계정 없이 등록하므로 user_id가 비어 있다
+  'POST /api/admin/entries': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const name = String(b.name || '').trim().slice(0, 20);
+    const phone = String(b.phone || '').replace(/\D/g, '');
+    const party = Number(b.partySize);
+    if (!name) return json(res, 400, { error: '이름을 입력하세요.' });
+    if (phone && !/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
+    if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
+      return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    if (phone && db.prepare(`SELECT 1 FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(phone))
+      return json(res, 409, { error: '이미 접수된 대기가 있습니다.' });
+    db.prepare('INSERT INTO entries (token,name,phone,party_size,memo) VALUES (?,?,?,?,?)')
+      .run(crypto.randomBytes(12).toString('hex'), name, phone, party, String(b.memo || '').trim().slice(0, 200) || null);
+    notify();
+    json(res, 201, { ok: true });
+  },
+  // 이력 조회(M-11): 날짜·이름/연락처·레인 검색. format=csv이면 엑셀용 CSV로 내려준다
+  'GET /api/admin/history': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const q = new URL(req.url, 'http://x').searchParams;
+    const day = /^\d{4}-\d\d-\d\d$/;
+    const from = day.test(q.get('from')) ? q.get('from') : new Date().toLocaleDateString('sv');
+    const to = day.test(q.get('to')) ? q.get('to') : from;
+    const where = ['date(created_at) BETWEEN ? AND ?'], args = [from, to];
+    const kw = (q.get('q') || '').trim();
+    if (kw) {
+      where.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')");
+      const like = `%${kw.replace(/[\\%_]/g, '\\$&')}%`;
+      args.push(like, like);
+    }
+    const lane = Number(q.get('lane'));
+    if (lane) { where.push("(',' || lanes || ',') LIKE ?"); args.push(`%,${lane},%`); }
+    const rows = db.prepare(`SELECT *, CASE WHEN assigned_at IS NOT NULL
+      THEN CAST(ROUND((julianday(assigned_at) - julianday(created_at)) * 1440) AS INTEGER) END AS wait_min
+      FROM entries WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 2000`).all(...args);
+    const view = rows.map((e) => ({
+      id: e.id, createdAt: e.created_at, name: e.name, phone: e.phone, partySize: e.party_size, status: e.status,
+      lanes: e.lanes || '', assignedAt: e.assigned_at || '', waitMin: e.wait_min ?? '', manual: e.user_id === null,
+      memo: e.memo || '', cancelReason: e.cancel_reason || '',
+    }));
+    if (q.get('format') !== 'csv') return json(res, 200, { from, to, entries: view });
+    const head = ['접수 시각', '이름', '전화', '인원', '상태', '레인', '배정 시각', '대기(분)', '경로', '메모', '취소 사유'];
+    // 엑셀이 수식으로 해석하지 않도록 =,+,-,@로 시작하는 값 앞에 '를 붙인다
+    const cell = (v) => { v = String(v); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
+    const csv = [head, ...view.map((e) => [e.createdAt, e.name, e.phone, e.partySize, e.status, e.lanes, e.assignedAt, e.waitMin, e.manual ? '수기' : 'QR', e.memo, e.cancelReason])]
+      .map((r) => r.map(cell).join(',')).join('\r\n');
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="history_${from}_${to}.csv"` });
+    res.end('﻿' + csv);
   },
 };
 
 async function handleAction(req, res, id, action) {
   if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-  const t = TRANSITIONS[action];
   const e = db.prepare('SELECT * FROM entries WHERE id=?').get(id);
+  const b = await readBody(req);
+  if (action === 'edit' && e) { // 인원 수정·메모
+    if (!['WAITING', 'CALLED', 'ASSIGNED'].includes(e.status)) return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
+    const party = b.partySize === undefined ? e.party_size : Number(b.partySize);
+    if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY) return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    const memo = b.memo === undefined ? e.memo : String(b.memo).trim().slice(0, 200) || null;
+    db.prepare('UPDATE entries SET party_size=?, memo=? WHERE id=?').run(party, memo, id);
+    notify();
+    return json(res, 200, { ok: true });
+  }
+  const t = TRANSITIONS[action];
   if (!t || !e) return json(res, 404, { error: 'not found' });
   if (!t.from.includes(e.status)) return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
   let lanes = e.lanes;
   if (action === 'assign') {
-    const b = await readBody(req);
     const picked = [...new Set(String(b.lanes || '').split(',').map((s) => Number(s.trim())))];
     if (!picked.length || picked.some((n) => !Number.isInteger(n) || n < 1 || n > LANES))
       return json(res, 400, { error: `레인은 1~${LANES} 번호로 입력하세요. 예: 5,6` });
@@ -331,8 +399,9 @@ async function handleAction(req, res, id, action) {
   db.prepare(`UPDATE entries SET status=?, lanes=?,
     assigned_at = CASE WHEN ?='assign' THEN ${now} ELSE assigned_at END,
     called_at = CASE WHEN ?='call' THEN ${now} ELSE called_at END,
-    finished_at = CASE WHEN ? IN ('finish','cancel') THEN ${now} ELSE finished_at END
-    WHERE id=?`).run(t.to, lanes, action, action, action, id);
+    finished_at = CASE WHEN ? IN ('finish','cancel') THEN ${now} ELSE finished_at END,
+    cancel_reason = CASE WHEN ?='cancel' THEN ? ELSE cancel_reason END
+    WHERE id=?`).run(t.to, lanes, action, action, action, action, String(b.reason || '').trim().slice(0, 100) || null, id);
   notify();
   json(res, 200, { ok: true });
 }
