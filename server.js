@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS pii_view_log (
   ip TEXT,
   viewed_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )`);
+try { db.exec("ALTER TABLE members ADD COLUMN tier TEXT NOT NULL DEFAULT '일반'"); } catch {}
+try { db.exec('ALTER TABLE members ADD COLUMN verified_at TEXT'); } catch {}
+const FULL = '정회원';
+const isFullMember = (userId, phone) => !!db.prepare('SELECT 1 FROM members WHERE tier=? AND (user_id=? OR phone=?)').get(FULL, userId ?? -1, phone ?? '');
+const NOT_FULL = { error: '대회는 정회원만 신청할 수 있습니다. 본인인증을 거쳐 정회원으로 가입해 주세요.', code: 'MEMBER_REQUIRED' };
 const linkMember = (user, phone) => {
   if (db.prepare('UPDATE members SET user_id=? WHERE phone=?').run(user.id, phone).changes) return;
   db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, phone, user.id);
@@ -281,7 +286,7 @@ const api = {
     const u = currentUser(req);
     const active = u && db.prepare(`SELECT token FROM entries WHERE user_id=? AND status IN ${ACTIVE}`).get(u.id);
     json(res, 200, {
-      user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone) } : null,
+      user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
       activeToken: active?.token || null,
       intake: { open: intakeOpen(), allowed: hasIntakeToken(req), window: outsideWindow() },
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
@@ -295,8 +300,10 @@ const api = {
   'POST /api/phone/send': async (req, res) => {
     const user = currentUser(req);
     if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
-    if (intakeBlocked(req, res)) return;
-    const phone = String((await readBody(req)).phone || '').replace(/\D/g, '');
+    const b = await readBody(req);
+    // 대회 신청 기간에는 QR 없이도 번호 인증을 받을 수 있다(소셜 로그인은 필요, 발송 한도는 동일)
+    if (!(b.for === 'tournament' && tournamentApplying()) && intakeBlocked(req, res)) return;
+    const phone = String(b.phone || '').replace(/\D/g, '');
     if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(phone, user.id);
     if (owner) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' });
@@ -472,9 +479,17 @@ const api = {
       total, page, size,
       entries: rows.map((m) => ({
         id: m.id, name: m.name, age: m.birth_year ? year - m.birth_year : null, gender: m.gender || '',
-        phone: maskPhone(m.phone), email: maskEmail(m.email), source: m.source, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
+        phone: maskPhone(m.phone), email: maskEmail(m.email), source: m.source, tier: m.tier, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
       })),
     });
+  },
+  // 정회원 지정·해제: 본인인증(현재는 매장에서 신분 확인)을 거친 회원만 정회원으로 올린다
+  'POST /api/admin/members/tier': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    if (![FULL, '일반'].includes(b.tier)) return json(res, 400, { error: '등급을 확인하세요.' });
+    const r = db.prepare("UPDATE members SET tier=?, verified_at=CASE WHEN ?=? THEN datetime('now','localtime') END WHERE id=?").run(b.tier, b.tier, FULL, Number(b.id));
+    json(res, r.changes ? 200 : 404, r.changes ? { ok: true } : { error: 'not found' });
   },
   // 개인정보 원문 조회(결정 11): 관리자 비밀번호를 다시 입력해야 하고, 조회 기록을 남긴다
   'POST /api/admin/members/reveal': async (req, res) => {
@@ -623,6 +638,173 @@ async function handleAction(req, res, id, action) {
   json(res, 200, { ok: true });
 }
 
+// ---- 정기 대회 참가신청 (M-18) ----
+// 신청 상태: PENDING 입금 대기, CONFIRMED 확정(입금 확인), WAITLIST 대기(정원 초과), DELETED 삭제(취소·환불 메모)
+// 정원은 PENDING+CONFIRMED로 센다. 자리가 나면 대기 순서대로 입금 대기로 올라간다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS tournaments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  event_at TEXT NOT NULL,
+  apply_start TEXT NOT NULL,
+  apply_end TEXT NOT NULL,
+  capacity INTEGER NOT NULL,
+  fee INTEGER NOT NULL DEFAULT 0,
+  info TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS tournament_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tournament_id INTEGER NOT NULL,
+  user_id INTEGER,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  status TEXT NOT NULL,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  paid_at TEXT,
+  deleted_at TEXT,
+  delete_reason TEXT,
+  refund_memo TEXT
+)`);
+const TS = /^\d{4}-\d\d-\d\d[ T]\d\d:\d\d$/;
+const nowTs = () => new Date().toLocaleString('sv').slice(0, 16); // 2026-11-02 14:05 (서버 시간대)
+const normTs = (v) => String(v || '').trim().replace('T', ' ');
+const seatsTaken = (tid) => db.prepare("SELECT COUNT(*) n FROM tournament_entries WHERE tournament_id=? AND status IN ('PENDING','CONFIRMED')").get(tid).n;
+const promoteWaitlist = (tid) => {
+  const t = db.prepare('SELECT capacity FROM tournaments WHERE id=?').get(tid);
+  const free = t ? t.capacity - seatsTaken(tid) : 0;
+  if (free > 0) db.prepare("UPDATE tournament_entries SET status='PENDING' WHERE id IN (SELECT id FROM tournament_entries WHERE tournament_id=? AND status='WAITLIST' ORDER BY id LIMIT ?)").run(tid, free);
+};
+const applyWindow = (t, now = nowTs()) => (now < t.apply_start ? 'before' : now > t.apply_end ? 'closed' : 'open');
+const tournamentApplying = () => db.prepare('SELECT * FROM tournaments').all().some((t) => applyWindow(t) === 'open');
+const tournamentView = (t, userId) => {
+  const mine = userId && db.prepare("SELECT status FROM tournament_entries WHERE tournament_id=? AND user_id=? AND status<>'DELETED'").get(t.id, userId);
+  return {
+    id: t.id, name: t.name, eventAt: t.event_at, applyStart: t.apply_start, applyEnd: t.apply_end, capacity: t.capacity,
+    fee: t.fee, info: t.info || '', apply: applyWindow(t), taken: seatsTaken(t.id), mine: mine?.status || null,
+    waitlist: db.prepare("SELECT COUNT(*) n FROM tournament_entries WHERE tournament_id=? AND status='WAITLIST'").get(t.id).n,
+  };
+};
+const tournamentEntryView = (e) => ({
+  id: e.id, name: e.name, phone: e.phone, status: e.status, appliedAt: e.applied_at, paidAt: e.paid_at || '',
+  deletedAt: e.deleted_at || '', deleteReason: e.delete_reason || '', refundMemo: e.refund_memo || '', manual: e.user_id === null,
+});
+// 신청 접수: 정원이 남아 있으면 입금 대기, 아니면 대기. 같은 번호의 중복 신청은 막는다
+const addTournamentEntry = (tid, userId, name, phone) => {
+  const t = db.prepare('SELECT * FROM tournaments WHERE id=?').get(tid);
+  const dup = db.prepare("SELECT 1 FROM tournament_entries WHERE tournament_id=? AND (phone=? OR (? IS NOT NULL AND user_id=?)) AND status<>'DELETED'").get(tid, phone, userId, userId);
+  if (dup) return { code: 409, error: '이미 신청한 대회입니다.' };
+  const status = seatsTaken(tid) < t.capacity ? 'PENDING' : 'WAITLIST';
+  db.prepare('INSERT INTO tournament_entries (tournament_id,user_id,name,phone,status) VALUES (?,?,?,?,?)').run(tid, userId, name, phone, status);
+  return { status };
+};
+
+async function handleTournaments(req, res, url) {
+  const path = url.pathname;
+  let m;
+  const admin = path.startsWith('/api/admin/');
+  if (admin && !isAdmin(req)) return json(res, 401, { error: 'unauthorized' }), true;
+
+  // --- 손님 ---
+  if (req.method === 'GET' && path === '/api/tournaments') {
+    const user = currentUser(req);
+    const rows = db.prepare("SELECT * FROM tournaments WHERE event_at >= date('now','localtime','-1 day') ORDER BY event_at").all();
+    json(res, 200, { tournaments: rows.map((t) => tournamentView(t, user?.id)) });
+    return true;
+  }
+  if (req.method === 'POST' && (m = path.match(/^\/api\/tournaments\/(\d+)\/(apply|cancel)$/))) {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' }), true;
+    const t = db.prepare('SELECT * FROM tournaments WHERE id=?').get(Number(m[1]));
+    if (!t) return json(res, 404, { error: 'not found' }), true;
+    if (m[2] === 'apply') {
+      if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' }), true;
+      if (isBlacklisted(user.phone)) return json(res, 403, BLACKLISTED), true;
+      if (!isFullMember(user.id, user.phone)) return json(res, 403, NOT_FULL), true;
+      if (applyWindow(t) !== 'open') return json(res, 403, { error: '신청 기간이 아닙니다.', code: 'NOT_OPEN' }), true;
+      const r = addTournamentEntry(t.id, user.id, user.name, user.phone);
+      if (r.error) return json(res, r.code, { error: r.error }), true;
+      return json(res, 201, { status: r.status }), true;
+    }
+    // 취소: 입금 전(입금 대기·대기)만 본인이 할 수 있다. 확정 건은 매장에 문의
+    const e = db.prepare("SELECT * FROM tournament_entries WHERE tournament_id=? AND user_id=? AND status<>'DELETED'").get(t.id, user.id);
+    if (!e) return json(res, 404, { error: '신청 내역이 없습니다.' }), true;
+    if (e.status === 'CONFIRMED') return json(res, 409, { error: '입금이 확인된 신청은 매장에 문의해 주세요.' }), true;
+    db.prepare("UPDATE tournament_entries SET status='DELETED', deleted_at=datetime('now','localtime'), delete_reason='본인 취소' WHERE id=?").run(e.id);
+    promoteWaitlist(t.id);
+    return json(res, 200, { ok: true }), true;
+  }
+
+  // --- 관리자 ---
+  if (req.method === 'GET' && path === '/api/admin/tournaments') {
+    json(res, 200, { tournaments: db.prepare('SELECT * FROM tournaments ORDER BY event_at DESC').all().map((t) => ({
+      ...tournamentView(t),
+    })) });
+    return true;
+  }
+  if (req.method === 'POST' && path === '/api/admin/tournaments') { // 등록·수정(id가 있으면 수정)
+    const b = await readBody(req);
+    const f = {
+      name: String(b.name || '').trim().slice(0, 50), eventAt: normTs(b.eventAt), applyStart: normTs(b.applyStart), applyEnd: normTs(b.applyEnd),
+      capacity: Number(b.capacity), fee: Number(b.fee || 0), info: String(b.info || '').trim().slice(0, 2000),
+    };
+    if (!f.name) return json(res, 400, { error: '대회명을 입력하세요.' }), true;
+    if (![f.eventAt, f.applyStart, f.applyEnd].every((v) => TS.test(v))) return json(res, 400, { error: '일시를 확인하세요.' }), true;
+    if (f.applyStart >= f.applyEnd) return json(res, 400, { error: '신청 종료는 시작보다 늦어야 합니다.' }), true;
+    if (!Number.isInteger(f.capacity) || f.capacity < 1 || f.capacity > 500) return json(res, 400, { error: '정원은 1~500명입니다.' }), true;
+    if (!Number.isInteger(f.fee) || f.fee < 0) return json(res, 400, { error: '참가비를 확인하세요.' }), true;
+    let id = Number(b.id);
+    if (id) {
+      if (!db.prepare('SELECT 1 FROM tournaments WHERE id=?').get(id)) return json(res, 404, { error: 'not found' }), true;
+      db.prepare('UPDATE tournaments SET name=?, event_at=?, apply_start=?, apply_end=?, capacity=?, fee=?, info=? WHERE id=?')
+        .run(f.name, f.eventAt, f.applyStart, f.applyEnd, f.capacity, f.fee, f.info || null, id);
+      promoteWaitlist(id); // 정원을 늘렸으면 대기자가 올라간다
+    } else {
+      id = Number(db.prepare('INSERT INTO tournaments (name,event_at,apply_start,apply_end,capacity,fee,info) VALUES (?,?,?,?,?,?,?)')
+        .run(f.name, f.eventAt, f.applyStart, f.applyEnd, f.capacity, f.fee, f.info || null).lastInsertRowid);
+    }
+    return json(res, 200, { id }), true;
+  }
+  if (req.method === 'GET' && (m = path.match(/^\/api\/admin\/tournaments\/(\d+)\/entries$/))) {
+    const rows = db.prepare('SELECT * FROM tournament_entries WHERE tournament_id=? ORDER BY id').all(Number(m[1]));
+    json(res, 200, { entries: rows.map(tournamentEntryView) });
+    return true;
+  }
+  if (req.method === 'POST' && (m = path.match(/^\/api\/admin\/tournaments\/(\d+)\/entries$/))) { // 현장·전화 신청 대리 등록
+    const b = await readBody(req);
+    const name = String(b.name || '').trim().slice(0, 20), phone = String(b.phone || '').replace(/\D/g, '');
+    if (!db.prepare('SELECT 1 FROM tournaments WHERE id=?').get(Number(m[1]))) return json(res, 404, { error: 'not found' }), true;
+    if (!name) return json(res, 400, { error: '이름을 입력하세요.' }), true;
+    if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' }), true;
+    if (isBlacklisted(phone)) return json(res, 403, { error: '블랙리스트에 등록된 번호입니다.' }), true;
+    if (!isFullMember(null, phone)) return json(res, 403, { error: '정회원이 아닙니다. 회원관리에서 정회원으로 지정한 뒤 신청하세요.' }), true;
+    const r = addTournamentEntry(Number(m[1]), null, name, phone);
+    return json(res, r.error ? r.code : 201, r.error ? { error: r.error } : { status: r.status }), true;
+  }
+  if (req.method === 'POST' && (m = path.match(/^\/api\/admin\/tournament-entries\/(\d+)\/(confirm|unconfirm|delete|memo)$/))) {
+    const b = await readBody(req);
+    const e = db.prepare('SELECT * FROM tournament_entries WHERE id=?').get(Number(m[1]));
+    if (!e) return json(res, 404, { error: 'not found' }), true;
+    const bad = (from) => !from.includes(e.status) && (json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` }), true);
+    if (m[2] === 'confirm') { // 입금 확인
+      if (bad(['PENDING'])) return true;
+      db.prepare("UPDATE tournament_entries SET status='CONFIRMED', paid_at=datetime('now','localtime') WHERE id=?").run(e.id);
+    } else if (m[2] === 'unconfirm') { // 입금 확인 취소
+      if (bad(['CONFIRMED'])) return true;
+      db.prepare("UPDATE tournament_entries SET status='PENDING', paid_at=NULL WHERE id=?").run(e.id);
+    } else if (m[2] === 'delete') {
+      if (bad(['PENDING', 'CONFIRMED', 'WAITLIST'])) return true;
+      db.prepare("UPDATE tournament_entries SET status='DELETED', deleted_at=datetime('now','localtime'), delete_reason=?, refund_memo=? WHERE id=?")
+        .run(String(b.reason || '').trim().slice(0, 100) || null, String(b.refundMemo || '').trim().slice(0, 200) || null, e.id);
+      promoteWaitlist(e.tournament_id);
+    } else { // 환불 메모만 수정
+      db.prepare('UPDATE tournament_entries SET refund_memo=? WHERE id=?').run(String(b.memo || '').trim().slice(0, 200) || null, e.id);
+    }
+    return json(res, 200, { ok: true }), true;
+  }
+  return false;
+}
+
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
 
 const server = http.createServer(async (req, res) => {
@@ -664,8 +846,9 @@ const server = http.createServer(async (req, res) => {
       if (!oauth.enabled().includes(name)) return redirect(res, '/?login=disabled');
       if (!m[2]) {
         const state = crypto.randomBytes(16).toString('hex');
+        const next = url.searchParams.get('next') === 'tournament' ? [`login_next=tournament; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${SECURE}`] : [];
         return redirect(res, oauth.authorizeUrl(name, state),
-          [`oauth_state=${name}.${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${SECURE}`]);
+          [`oauth_state=${name}.${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${SECURE}`, ...next]);
       }
       const state = url.searchParams.get('state');
       const clear = `oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`;
@@ -679,7 +862,8 @@ const server = http.createServer(async (req, res) => {
       const u = db.prepare('SELECT id FROM users WHERE provider=? AND provider_id=?').get(name, profile.id);
       const sid = crypto.randomBytes(24).toString('hex');
       db.prepare('INSERT INTO user_sessions (token,user_id) VALUES (?,?)').run(sid, u.id);
-      return redirect(res, '/', [clear, `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7776000${SECURE}`]);
+      const back = cookie(req, 'login_next') === 'tournament' ? '/tournament' : '/';
+      return redirect(res, back, [clear, `login_next=; Path=/; Max-Age=0${SECURE}`, `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7776000${SECURE}`]);
     }
     if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/entries\/([0-9a-f]+)$/))) {
       const e = db.prepare('SELECT * FROM entries WHERE token=?').get(m[1]);
@@ -694,11 +878,13 @@ const server = http.createServer(async (req, res) => {
       notify();
       return json(res, 200, { ok: true });
     }
+    if (/^\/api\/(admin\/)?tournament/.test(url.pathname) && await handleTournaments(req, res, url)) return;
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/admin\/entries\/(\d+)\/(\w+)$/)))
       return await handleAction(req, res, Number(m[1]), m[2]);
 
     if (req.method === 'GET') {
-      const file = url.pathname === '/' ? 'index.html' : url.pathname === '/admin' ? 'admin.html' : url.pathname.slice(1);
+      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html' }[url.pathname];
+      const file = page || url.pathname.slice(1);
       const full = path.join(PUBLIC, file);
       if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {
         res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream' });

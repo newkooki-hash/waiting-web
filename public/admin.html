@@ -128,6 +128,7 @@
         <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
         <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
         <a href="#history" data-view="history">이력 조회</a>
+        <a href="#tournaments" data-view="tournaments">대회 신청</a>
         <a href="#members" data-view="members">회원관리</a>
         <a href="#blacklist" data-view="blacklist">블랙리스트</a>
         <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
@@ -178,6 +179,47 @@
         <tbody id="hRows"></tbody>
       </table></div>
       <div id="hCount" class="hint"></div>
+    </section>
+
+    <section id="v-tournaments" hidden>
+      <h2>정기 대회 신청</h2>
+      <p class="sub">접수 기간과 정원을 정하면 손님이 /tournament 페이지에서 신청합니다. 정원이 차면 대기로 받고, 자리가 나면 순서대로 입금 대기로 올라갑니다.</p>
+      <form id="tForm" class="panel" style="margin-bottom:12px">
+        <div class="field">
+          <strong id="tFormTitle">대회 등록</strong>
+          <input type="text" id="tName" placeholder="대회명" maxlength="50" required style="width:200px">
+          <label>대회 <input type="datetime-local" id="tEvent" required></label>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>신청 시작 <input type="datetime-local" id="tStart" required></label>
+          <label>신청 종료 <input type="datetime-local" id="tEnd" required></label>
+          <input type="text" id="tCap" placeholder="정원" inputmode="numeric" required style="width:80px">
+          <input type="text" id="tFee" placeholder="참가비(원)" inputmode="numeric" style="width:110px">
+        </div>
+        <div class="field" style="margin-top:10px;align-items:flex-start">
+          <textarea id="tInfo" rows="7" placeholder="신청 안내 (입금 계좌, 주의사항 등. 손님 신청 화면에 그대로 표시됩니다)" maxlength="2000" style="flex:1;min-width:260px;font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
+          <button class="primary">저장</button>
+          <button type="button" id="tReset" hidden>새 대회로</button>
+        </div>
+        <div id="tMsg" class="err" role="alert"></div>
+      </form>
+      <div class="wrap"><table>
+        <thead><tr><th>대회</th><th>대회일</th><th>신청 기간</th><th>신청 현황</th><th></th></tr></thead>
+        <tbody id="tRows"></tbody>
+      </table></div>
+      <div id="tEntriesBox" class="panel" style="margin-top:16px" hidden>
+        <h3 id="tEntriesTitle"></h3>
+        <form id="tAdd" class="field" style="margin-bottom:12px">
+          <input type="text" id="tAddName" placeholder="이름" maxlength="20" required style="width:120px">
+          <input type="text" id="tAddPhone" placeholder="전화" inputmode="numeric" required style="width:150px">
+          <button class="primary">대리 신청</button>
+        </form>
+        <div class="wrap"><table>
+          <thead><tr><th>#</th><th>이름</th><th>전화</th><th>상태</th><th>신청</th><th>메모</th><th></th></tr></thead>
+          <tbody id="tEntryRows"></tbody>
+        </table></div>
+        <div id="tEntryMsg" class="err" role="alert"></div>
+      </div>
     </section>
 
     <section id="v-members" hidden>
@@ -273,7 +315,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'members', 'blacklist', 'intake'];
+const VIEWS = ['queue', 'done', 'history', 'tournaments', 'members', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -289,7 +331,95 @@ function route() {
   if (v === 'history') loadHistory();
   if (v === 'blacklist') loadBlacklist();
   if (v === 'members') loadMembers();
+  if (v === 'tournaments') loadTournaments();
 }
+
+// 정기 대회 신청
+const T_STATUS = { PENDING: '입금 대기', CONFIRMED: '확정', WAITLIST: '대기', DELETED: '삭제' };
+const T_APPLY = { before: '시작 전', open: '접수 중', closed: '마감' };
+let tList = [], tEditId = null, tOpenId = null;
+const dt = (v) => v.replace(' ', 'T'); // datetime-local 값
+async function loadTournaments() {
+  const r = await fetch('/api/admin/tournaments');
+  if (!r.ok) return;
+  tList = (await r.json()).tournaments;
+  $('tRows').innerHTML = tList.length ? tList.map((t) => `
+    <tr data-id="${t.id}"><td><strong>${esc(t.name)}</strong>${t.fee ? `<div class="meta">참가비 ${t.fee.toLocaleString()}원</div>` : ''}</td>
+    <td>${esc(t.eventAt)}</td><td>${esc(t.applyStart)} ~ ${esc(t.applyEnd)}<div class="meta">${T_APPLY[t.apply]}</div></td>
+    <td>${t.taken} / ${t.capacity}명${t.waitlist ? ` · 대기 ${t.waitlist}` : ''}</td>
+    <td class="actions"><button data-t="entries">신청자</button><button data-t="edit">수정</button></td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty" style="border:0">등록된 대회가 없습니다.</td></tr>';
+  if (tOpenId) loadTournamentEntries();
+}
+function resetTForm() {
+  tEditId = null; $('tForm').reset(); $('tFormTitle').textContent = '대회 등록'; $('tReset').hidden = true;
+}
+$('tReset').onclick = resetTForm;
+$('tForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('tMsg').textContent = '';
+  const r = await post('/api/admin/tournaments', {
+    id: tEditId, name: $('tName').value, eventAt: $('tEvent').value, applyStart: $('tStart').value, applyEnd: $('tEnd').value,
+    capacity: $('tCap').value, fee: $('tFee').value, info: $('tInfo').value,
+  });
+  if (!r.ok) return ($('tMsg').textContent = r.body.error || '저장에 실패했습니다.');
+  resetTForm(); loadTournaments();
+});
+$('tRows').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-t]');
+  if (!btn) return;
+  const t = tList.find((x) => x.id === Number(btn.closest('tr').dataset.id));
+  if (btn.dataset.t === 'edit') {
+    tEditId = t.id; $('tFormTitle').textContent = '대회 수정'; $('tReset').hidden = false;
+    $('tName').value = t.name; $('tEvent').value = dt(t.eventAt); $('tStart').value = dt(t.applyStart); $('tEnd').value = dt(t.applyEnd);
+    $('tCap').value = t.capacity; $('tFee').value = t.fee || ''; $('tInfo').value = t.info;
+    $('tForm').scrollIntoView({ behavior: 'smooth' });
+  } else { tOpenId = t.id; $('tEntriesBox').hidden = false; $('tEntriesTitle').textContent = t.name + ' 신청자'; loadTournamentEntries(); }
+});
+async function loadTournamentEntries() {
+  const r = await fetch(`/api/admin/tournaments/${tOpenId}/entries`);
+  if (!r.ok) return;
+  const { entries } = await r.json();
+  let n = 0;
+  $('tEntryRows').innerHTML = entries.length ? entries.map((e) => {
+    const num = e.status === 'DELETED' ? '' : ++n;
+    const memo = e.status === 'DELETED' ? [e.deleteReason, e.refundMemo && '환불: ' + e.refundMemo].filter(Boolean).join(' / ') : '';
+    return `<tr data-id="${e.id}" data-memo="${esc(e.refundMemo)}" style="${e.status === 'DELETED' ? 'opacity:.55' : ''}">
+      <td>${num}</td><td><strong>${esc(e.name)}</strong>${e.manual ? ' <span class="badge WAITING">대리</span>' : ''}</td><td>${esc(e.phone)}</td>
+      <td>${T_STATUS[e.status]}${e.paidAt ? `<div class="meta">입금 ${esc(e.paidAt.slice(5, 16))}</div>` : ''}</td>
+      <td>${esc(e.appliedAt.slice(5, 16))}</td><td>${esc(memo)}</td>
+      <td class="actions">${e.status === 'PENDING' ? '<button class="primary" data-te="confirm">입금 확인</button>' : ''}${e.status === 'CONFIRMED' ? '<button data-te="unconfirm">입금 취소</button>' : ''}${e.status !== 'DELETED' ? '<button class="danger" data-te="delete">삭제</button>' : '<button data-te="memo">환불 메모</button>'}</td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="empty" style="border:0">신청자가 없습니다.</td></tr>';
+}
+$('tEntryRows').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-te]');
+  if (!btn) return;
+  const row = btn.closest('tr'), act = btn.dataset.te;
+  let body = {};
+  if (act === 'delete') {
+    const reason = prompt('삭제 사유 (선택)', '');
+    if (reason === null) return;
+    const refundMemo = prompt('환불 메모 (선택, 예: 환불 계좌 전달 완료)', '');
+    if (refundMemo === null) return;
+    body = { reason, refundMemo };
+  }
+  if (act === 'memo') {
+    const memo = prompt('환불 메모', row.dataset.memo);
+    if (memo === null) return;
+    body = { memo };
+  }
+  $('tEntryMsg').textContent = '';
+  const r = await post(`/api/admin/tournament-entries/${row.dataset.id}/${act}`, body);
+  if (!r.ok) $('tEntryMsg').textContent = r.body.error || '처리에 실패했습니다.';
+  loadTournaments();
+});
+$('tAdd').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('tEntryMsg').textContent = '';
+  const r = await post(`/api/admin/tournaments/${tOpenId}/entries`, { name: $('tAddName').value, phone: $('tAddPhone').value });
+  if (!r.ok) return ($('tEntryMsg').textContent = r.body.error || '등록에 실패했습니다.');
+  ev.target.reset(); loadTournaments();
+});
 
 // 회원관리
 let mPage = 1, mLast = 1, revealId;
@@ -301,7 +431,7 @@ async function loadMembers() {
   $('mRows').innerHTML = entries.length ? entries.map((m) => `
     <tr data-id="${m.id}"><td><strong>${esc(m.name)}</strong></td><td>${m.age ?? ''}</td><td>${esc(m.gender)}</td>
     <td>${esc(m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td>
-    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}</td><td><button data-m="reveal">원문</button></td></tr>`).join('')
+    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button data-m="reveal">원문</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
     : '<tr><td colspan="8" class="empty" style="border:0">회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</td></tr>';
   $('mPage').textContent = `${mPage} / ${mLast}쪽 · 총 ${total}명`;
   $('mPrev').disabled = mPage <= 1; $('mNext').disabled = mPage >= mLast;
@@ -312,6 +442,11 @@ $('mNext').onclick = () => { mPage++; loadMembers(); };
 $('mRows').addEventListener('click', (ev) => {
   const btn = ev.target.closest('button[data-m]');
   if (!btn) return;
+  if (btn.dataset.m === 'tier') {
+    const to = btn.dataset.tier;
+    if (!confirm(to === '정회원' ? '본인 확인을 마친 회원을 정회원으로 지정할까요? 정회원은 대회에 신청할 수 있습니다.' : '일반회원으로 되돌릴까요?')) return;
+    return post('/api/admin/members/tier', { id: Number(btn.closest('tr').dataset.id), tier: to }).then(loadMembers);
+  }
   revealId = Number(btn.closest('tr').dataset.id);
   $('revealPw').value = ''; $('revealOut').textContent = ''; $('revealErr').textContent = ''; $('revealGo').hidden = false;
   $('revealDlg').showModal();

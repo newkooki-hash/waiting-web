@@ -265,6 +265,77 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.deepEqual(shown.body, { phone: '01022223333', email: 'kim@example.com' });
     assert.equal((await call('POST', '/api/admin/members/reveal', { id: 99999, password: 'pw' })).status, 404);
     assert.equal((await fetch(base + '/api/admin/members/reveal', { method: 'POST' })).status, 401);
+    // --- 정기 대회 신청 ---
+    const ts = (min) => new Date(Date.now() + min * 60000).toLocaleString('sv').slice(0, 16);
+    const tour = (b) => call('POST', '/api/admin/tournaments', { name: '11월 챔프전', eventAt: ts(60 * 24 * 7), applyStart: ts(-60), applyEnd: ts(60), capacity: 2, fee: 30000, info: '국민 000', ...b });
+    assert.equal((await fetch(base + '/api/admin/tournaments')).status, 401);
+    assert.equal((await tour({ name: '' })).status, 400);
+    assert.equal((await tour({ capacity: 0 })).status, 400);
+    assert.equal((await tour({ applyStart: ts(60), applyEnd: ts(-60) })).status, 400); // 종료가 시작보다 빠름
+    assert.equal((await tour({ eventAt: 'soon' })).status, 400);
+    const tid = (await tour()).body.id;
+    const future = (await tour({ name: '다음 대회', applyStart: ts(60), applyEnd: ts(120) })).body.id;
+    const listed = (await call('GET', '/api/tournaments')).body.tournaments;
+    assert.equal(listed.find((t) => t.id === tid).apply, 'open');
+    assert.equal(listed.find((t) => t.id === future).apply, 'before');
+    assert.equal(listed.find((t) => t.id === tid).mine, null);
+    const entriesOf = async () => (await call('GET', `/api/admin/tournaments/${tid}/entries`)).body.entries;
+    const statusOf = async (name) => (await entriesOf()).find((e) => e.name === name && e.status !== 'DELETED')?.status;
+    // 대회는 정회원만 신청할 수 있다
+    assert.equal((await call('GET', '/api/me')).body.user.fullMember, false);
+    assert.equal((await call('POST', `/api/tournaments/${tid}/apply`)).body.code, 'MEMBER_REQUIRED');
+    assert.equal((await call('POST', `/api/tournaments/${tid}/entries`)).status, 404); // 없는 경로
+    assert.equal((await call('POST', `/api/admin/tournaments/${tid}/entries`, { name: '김대리', phone: '01070001000' })).status, 403); // 회원 아님
+    await call('POST', '/api/admin/members/import', { csv: ['name,phone', '김대리,01070001000', '박대기,01070002000', '최대기,01070003000'].join('\r\n') });
+    const everyone = (await members()).entries;
+    assert.equal((await call('POST', '/api/admin/members/tier', { id: everyone[0].id, tier: '평회원' })).status, 400);
+    assert.equal((await call('POST', '/api/admin/members/tier', { id: 99999, tier: '정회원' })).status, 404);
+    assert.equal((await call('POST', `/api/admin/tournaments/${tid}/entries`, { name: '김대리', phone: '01070001000' })).status, 403); // 일반회원
+    for (const name of ['홍길동', '김대리', '박대기', '최대기']) {
+      assert.equal((await call('POST', '/api/admin/members/tier', { id: everyone.find((m) => m.name === name).id, tier: '정회원' })).status, 200);
+    }
+    assert.equal((await call('GET', '/api/me')).body.user.fullMember, true);
+    assert.equal((await members('?q=홍길동')).entries[0].tier, '정회원');
+    assert.equal((await call('POST', `/api/tournaments/${future}/apply`)).body.code, 'NOT_OPEN');
+    assert.equal((await call('POST', `/api/tournaments/${tid}/apply`)).status, 201); // 로그인한 홍길동, 정원 2 중 1
+    assert.equal((await call('POST', `/api/tournaments/${tid}/apply`)).status, 409);
+    assert.equal((await call('GET', '/api/tournaments')).body.tournaments.find((t) => t.id === tid).mine, 'PENDING');
+    const addT = (name, phone) => call('POST', `/api/admin/tournaments/${tid}/entries`, { name, phone });
+    assert.equal((await addT('김대리', '01070001000')).body.status, 'PENDING'); // 정원 2 가득
+    assert.equal((await addT('박대기', '01070002000')).body.status, 'WAITLIST'); // 정원 초과는 대기
+    assert.equal((await addT('김대리', '010-7000-1000')).status, 409);
+    assert.equal((await addT('이름', '123')).status, 400);
+    assert.equal((await call('GET', '/api/tournaments')).body.tournaments.find((t) => t.id === tid).taken, 2);
+    let rows = await entriesOf();
+    const mineId = rows.find((e) => e.name === '홍길동').id, proxyId = rows.find((e) => e.name === '김대리').id;
+    const act = (id, a, b) => call('POST', `/api/admin/tournament-entries/${id}/${a}`, b);
+    assert.equal((await act(mineId, 'confirm')).status, 200); // 입금 확인
+    assert.equal((await act(mineId, 'confirm')).status, 409);
+    assert.equal((await call('POST', `/api/tournaments/${tid}/cancel`)).status, 409); // 확정 건은 본인이 취소 불가
+    assert.equal((await act(proxyId, 'delete', { reason: '불참', refundMemo: '환불 계좌 전달' })).status, 200);
+    assert.equal(await statusOf('박대기'), 'PENDING'); // 자리가 나서 대기자가 올라감
+    const del = (await entriesOf()).find((e) => e.id === proxyId);
+    assert.deepEqual([del.status, del.deleteReason, del.refundMemo], ['DELETED', '불참', '환불 계좌 전달']);
+    assert.equal((await act(proxyId, 'delete')).status, 409);
+    assert.equal((await act(proxyId, 'memo', { memo: '환불 완료' })).status, 200);
+    assert.equal((await entriesOf()).find((e) => e.id === proxyId).refundMemo, '환불 완료');
+    assert.equal((await act(mineId, 'unconfirm')).status, 200);
+    assert.equal(await statusOf('홍길동'), 'PENDING');
+    assert.equal((await addT('최대기', '01070003000')).body.status, 'WAITLIST');
+    assert.equal((await tour({ id: tid, capacity: 3 })).status, 200); // 정원을 늘리면 대기자가 올라간다
+    assert.equal(await statusOf('최대기'), 'PENDING');
+    assert.equal((await call('POST', `/api/tournaments/${tid}/cancel`)).status, 200); // 입금 전에는 본인 취소 가능
+    assert.equal(await statusOf('홍길동'), undefined);
+    assert.equal((await call('POST', `/api/tournaments/${tid}/cancel`)).status, 404);
+    assert.equal((await call('POST', `/api/tournaments/${tid}/apply`)).status, 201); // 취소 후 다시 신청
+    assert.equal((await call('POST', `/api/tournaments/99999/apply`)).status, 404);
+    assert.equal((await act(99999, 'confirm')).status, 404);
+    // 접수가 중지되어도 대회 신청 기간에는 QR 없이 번호 인증을 받을 수 있다
+    await call('POST', '/api/admin/intake/open', { open: false });
+    assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).body.code, 'INTAKE_CLOSED');
+    assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).status, 400);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).body.code, undefined);
+    await call('POST', '/api/admin/intake/open', { open: true });
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);
