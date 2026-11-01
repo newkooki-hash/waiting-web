@@ -79,9 +79,38 @@ CREATE TABLE IF NOT EXISTS pii_view_log (
 )`);
 try { db.exec("ALTER TABLE members ADD COLUMN tier TEXT NOT NULL DEFAULT '일반'"); } catch {}
 try { db.exec('ALTER TABLE members ADD COLUMN verified_at TEXT'); } catch {}
+try { db.exec('ALTER TABLE members ADD COLUMN birth_date TEXT'); } catch {}
+db.exec(`CREATE TABLE IF NOT EXISTS member_change_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER NOT NULL,
+  field TEXT NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  changed_by TEXT NOT NULL,
+  changed_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+// 정회원 정보(생년월일·성별·등급)를 바꿀 때마다 남기는 기록. 값이 같으면 남기지 않는다
+const logChange = (memberId, field, oldV, newV, by) => {
+  if (String(oldV ?? '') === String(newV ?? '')) return;
+  db.prepare('INSERT INTO member_change_log (member_id,field,old_value,new_value,changed_by) VALUES (?,?,?,?,?)').run(memberId, field, oldV ?? null, newV ?? null, by);
+};
+const GENDER_LABEL = { m: '남', f: '여' };
+const validDate = (v) => {
+  if (!/^\d{4}-\d\d-\d\d$/.test(v)) return false;
+  const d = new Date(v + 'T00:00:00Z');
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v && v >= '1900-01-01' && v <= new Date().toLocaleDateString('sv');
+};
 const FULL = '정회원';
 const isFullMember = (userId, phone) => !!db.prepare('SELECT 1 FROM members WHERE tier=? AND (user_id=? OR phone=?)').get(FULL, userId ?? -1, phone ?? '');
-const NOT_FULL = { error: '대회는 정회원만 신청할 수 있습니다. 본인인증을 거쳐 정회원으로 가입해 주세요.', code: 'MEMBER_REQUIRED' };
+const NOT_FULL = { error: '대회는 정회원만 신청할 수 있습니다. 생년월일과 성별을 입력해 정회원으로 가입해 주세요.', code: 'MEMBER_REQUIRED' };
+const memberFor = (user) => {
+  let m = db.prepare('SELECT * FROM members WHERE user_id=? OR phone=?').get(user.id, user.phone);
+  if (!m) {
+    db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, user.phone, user.id);
+    m = db.prepare('SELECT * FROM members WHERE phone=?').get(user.phone);
+  } else if (!m.user_id) db.prepare('UPDATE members SET user_id=? WHERE id=?').run(user.id, m.id);
+  return m;
+};
 const linkMember = (user, phone) => {
   if (db.prepare('UPDATE members SET user_id=? WHERE phone=?').run(user.id, phone).changes) return;
   db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, phone, user.id);
@@ -478,18 +507,50 @@ const api = {
     json(res, 200, {
       total, page, size,
       entries: rows.map((m) => ({
-        id: m.id, name: m.name, age: m.birth_year ? year - m.birth_year : null, gender: m.gender || '',
+        id: m.id, name: m.name, age: m.birth_year ? year - m.birth_year : null, gender: GENDER_LABEL[m.gender] || m.gender || '', birthDate: m.birth_date || '',
         phone: maskPhone(m.phone), email: maskEmail(m.email), source: m.source, tier: m.tier, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
       })),
     });
+  },
+  // 정회원 가입·정보 수정: 본인이 생년월일·성별을 직접 입력한다(본인인증 없음). 입력하면 바로 정회원이 되고, 바뀐 내용은 이력으로 남는다
+  'GET /api/tournament-profile': async (req, res) => {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' });
+    const m = memberFor(user);
+    json(res, 200, { fullMember: m.tier === FULL, birthDate: m.birth_date || '', birthYear: m.birth_year || null, gender: GENDER_LABEL[m.gender] ? m.gender : '' });
+  },
+  'POST /api/tournament-profile': async (req, res) => {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    if (!user.phone) return json(res, 403, { error: '휴대전화 인증이 필요합니다.', code: 'PHONE_REQUIRED' });
+    const b = await readBody(req);
+    const birthDate = String(b.birthDate || '').trim(), gender = String(b.gender || '');
+    if (!validDate(birthDate)) return json(res, 400, { error: '생년월일을 확인하세요.' });
+    if (!GENDER_LABEL[gender]) return json(res, 400, { error: '성별을 선택하세요.' });
+    const m = memberFor(user);
+    const year = Number(birthDate.slice(0, 4));
+    db.prepare("UPDATE members SET birth_date=?, birth_year=?, gender=?, tier=?, verified_at=COALESCE(verified_at, datetime('now','localtime')) WHERE id=?").run(birthDate, year, gender, FULL, m.id);
+    logChange(m.id, '생년월일', m.birth_date || m.birth_year, birthDate, '본인');
+    logChange(m.id, '성별', m.gender, gender, '본인');
+    logChange(m.id, '등급', m.tier, FULL, '본인');
+    json(res, 200, { ok: true });
   },
   // 정회원 지정·해제: 본인인증(현재는 매장에서 신분 확인)을 거친 회원만 정회원으로 올린다
   'POST /api/admin/members/tier': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const b = await readBody(req);
     if (![FULL, '일반'].includes(b.tier)) return json(res, 400, { error: '등급을 확인하세요.' });
-    const r = db.prepare("UPDATE members SET tier=?, verified_at=CASE WHEN ?=? THEN datetime('now','localtime') END WHERE id=?").run(b.tier, b.tier, FULL, Number(b.id));
-    json(res, r.changes ? 200 : 404, r.changes ? { ok: true } : { error: 'not found' });
+    const m = db.prepare('SELECT id, tier FROM members WHERE id=?').get(Number(b.id));
+    if (!m) return json(res, 404, { error: 'not found' });
+    db.prepare("UPDATE members SET tier=?, verified_at=CASE WHEN ?=? THEN datetime('now','localtime') END WHERE id=?").run(b.tier, b.tier, FULL, m.id);
+    logChange(m.id, '등급', m.tier, b.tier, '관리자');
+    json(res, 200, { ok: true });
+  },
+  'GET /api/admin/members/log': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const id = Number(new URL(req.url, 'http://x').searchParams.get('id'));
+    json(res, 200, { entries: db.prepare('SELECT field, old_value AS oldValue, new_value AS newValue, changed_by AS changedBy, changed_at AS changedAt FROM member_change_log WHERE member_id=? ORDER BY id DESC').all(id) });
   },
   // 개인정보 원문 조회(결정 11): 관리자 비밀번호를 다시 입력해야 하고, 조회 기록을 남긴다
   'POST /api/admin/members/reveal': async (req, res) => {
