@@ -350,11 +350,11 @@ async function load() {
     </div>`).join('') : '<div class="empty">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
 
   $('done').innerHTML = done.length ? done.map((e) => `
-    <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
+    <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}" data-lanes="${esc(e.lanes)}">
       <td><strong>${esc(e.name)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
       <td><span class="lanechip">${esc(e.lanes)}번</span></td>
       <td>${esc((e.assignedAt || '').slice(11, 16))}</td>
-      <td class="actions"><button data-act="edit">수정</button><button class="danger" data-act="cancel">배정 취소</button></td>
+      <td class="actions"><button data-act="relane">레인 변경</button><button data-act="edit">수정</button><button class="danger" data-act="cancel">배정 취소</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="empty" style="border:0">오늘 배정한 팀이 없습니다.</td></tr>';
 }
 
@@ -379,6 +379,11 @@ document.addEventListener('click', async (ev) => {
     const reason = prompt('취소 사유를 입력하세요 (선택)', '');
     if (reason === null) return;
     body = { reason };
+  }
+  if (act === 'relane') {
+    const lanes = prompt('바꿀 레인 번호 (예: 5,6)', row.dataset.lanes);
+    if (!lanes) return;
+    body = { lanes };
   }
   if (act === 'blacklist') {
     const reason = prompt('블랙리스트 등록 사유 (필수). 이 번호의 대기 중인 건은 취소됩니다.', '');

@@ -215,6 +215,14 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/blacklist/remove', { id: bl[0].id })).status, 200);
     assert.equal((await manual({ name: '해제후', phone: '01011112222', partySize: 1 })).status, 201);
     assert.equal((await fetch(base + '/api/admin/blacklist')).status, 401);
+    // --- 배정 후 레인 변경 ---
+    const assigned = async () => (await call('GET', '/api/admin/entries')).body.entries.find((e) => e.id === ida);
+    const at = (await assigned()).assignedAt;
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/relane`, { lanes: '19' })).status, 400);
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/relane`, { lanes: '9, 3' })).status, 200);
+    assert.equal((await assigned()).lanes, '3,9');
+    assert.equal((await assigned()).assignedAt, at); // 배정 시각은 유지
+    assert.equal((await call('POST', `/api/admin/entries/${first.id}/relane`, { lanes: '1' })).status, 409); // 대기 건은 불가
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);

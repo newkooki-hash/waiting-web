@@ -417,6 +417,13 @@ const api = {
   },
 };
 
+const LANES_ERROR = { error: `레인은 1~${LANES} 번호로 입력하세요. 예: 5,6` };
+const parseLanes = (text) => { // "6, 5" → "5,6". 잘못된 입력이면 null
+  const picked = [...new Set(String(text || '').split(',').map((s) => Number(s.trim())))];
+  if (!picked.length || picked.some((n) => !Number.isInteger(n) || n < 1 || n > LANES)) return null;
+  return picked.sort((a, c) => a - c).join(',');
+};
+
 async function handleAction(req, res, id, action) {
   if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
   const e = db.prepare('SELECT * FROM entries WHERE id=?').get(id);
@@ -427,6 +434,14 @@ async function handleAction(req, res, id, action) {
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY) return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
     const memo = b.memo === undefined ? e.memo : String(b.memo).trim().slice(0, 200) || null;
     db.prepare('UPDATE entries SET party_size=?, memo=? WHERE id=?').run(party, memo, id);
+    notify();
+    return json(res, 200, { ok: true });
+  }
+  if (action === 'relane' && e) { // 배정 후 레인 변경: 배정 시각은 그대로 둔다
+    if (e.status !== 'ASSIGNED') return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
+    const lanes = parseLanes(b.lanes);
+    if (!lanes) return json(res, 400, LANES_ERROR);
+    db.prepare('UPDATE entries SET lanes=? WHERE id=?').run(lanes, id);
     notify();
     return json(res, 200, { ok: true });
   }
@@ -454,10 +469,8 @@ async function handleAction(req, res, id, action) {
   if (!t.from.includes(e.status)) return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
   let lanes = e.lanes;
   if (action === 'assign') {
-    const picked = [...new Set(String(b.lanes || '').split(',').map((s) => Number(s.trim())))];
-    if (!picked.length || picked.some((n) => !Number.isInteger(n) || n < 1 || n > LANES))
-      return json(res, 400, { error: `레인은 1~${LANES} 번호로 입력하세요. 예: 5,6` });
-    lanes = picked.sort((a, c) => a - c).join(',');
+    lanes = parseLanes(b.lanes);
+    if (!lanes) return json(res, 400, LANES_ERROR);
   }
   const now = "datetime('now','localtime')";
   db.prepare(`UPDATE entries SET status=?, lanes=?,
