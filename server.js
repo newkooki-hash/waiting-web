@@ -699,6 +699,47 @@ const api = {
     } catch (err) { db.exec('ROLLBACK'); throw err; }
     json(res, 200, report);
   },
+  // 통계(M-13): 접수일 기준. 대기시간은 접수~레인 배정까지(분)
+  'GET /api/admin/stats': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const q = new URL(req.url, 'http://x').searchParams;
+    const today = new Date().toLocaleDateString('sv');
+    const to = dateOk(q.get('to')) ? q.get('to') : today;
+    const from = dateOk(q.get('from')) ? q.get('from') : new Date(Date.parse(to + 'T00:00:00Z') - 29 * 86400000).toISOString().slice(0, 10);
+    if (from > to) return json(res, 400, { error: '시작일이 종료일보다 늦습니다.' });
+    if (Date.parse(to) - Date.parse(from) > 366 * 86400000) return json(res, 400, { error: '조회 기간은 최대 1년입니다.' });
+    const rows = db.prepare(`SELECT date(created_at) AS day, CAST(strftime('%H', created_at) AS INTEGER) AS hour, CAST(strftime('%w', created_at) AS INTEGER) AS dow,
+      party_size AS party, status, user_id IS NULL AS manual,
+      CASE WHEN assigned_at IS NOT NULL THEN (julianday(assigned_at) - julianday(created_at)) * 1440
+           WHEN status = 'CANCELED' AND finished_at IS NOT NULL THEN (julianday(finished_at) - julianday(created_at)) * 1440 END AS wait,
+      assigned_at IS NOT NULL AS was_assigned
+      FROM entries WHERE date(created_at) BETWEEN ? AND ?`).all(from, to);
+    const isAssigned = (r) => r.status === 'ASSIGNED' || r.status === 'FINISHED';
+    const avg = (list) => (list.length ? Math.round(list.reduce((a, r) => a + r.wait, 0) / list.length * 10) / 10 : null);
+    const summarize = (list) => {
+      const waits = list.filter((r) => r.wait !== null).map((r) => r.wait).sort((a, b) => a - b);
+      const sum = waits.reduce((a, b) => a + b, 0);
+      return {
+        teams: list.length, people: list.reduce((a, r) => a + r.party, 0),
+        assigned: list.filter(isAssigned).length, canceled: list.filter((r) => r.status === 'CANCELED').length,
+        waiting: list.filter((r) => r.status === 'WAITING' || r.status === 'CALLED').length,
+        avgWait: waits.length ? Math.round(sum / waits.length * 10) / 10 : null,
+        avgAssignedWait: avg(list.filter((r) => r.wait !== null && r.was_assigned)),
+        avgCanceledWait: avg(list.filter((r) => r.wait !== null && !r.was_assigned)),
+        medianWait: waits.length ? Math.round(waits[Math.floor((waits.length - 1) / 2)] * 10) / 10 : null,
+        maxWait: waits.length ? Math.round(waits[waits.length - 1] * 10) / 10 : null,
+      };
+    };
+    const group = (key) => {
+      const m = new Map();
+      rows.forEach((r) => m.set(r[key], [...(m.get(r[key]) || []), r]));
+      return m;
+    };
+    const days = [...group('day')].sort(([a], [b]) => a.localeCompare(b)).map(([day, list]) => ({ day, ...summarize(list) }));
+    const hours = [...group('hour')].sort(([a], [b]) => a - b).map(([hour, list]) => ({ hour, ...summarize(list) }));
+    const weekdays = [...group('dow')].sort(([a], [b]) => a - b).map(([dow, list]) => ({ dow, ...summarize(list) }));
+    json(res, 200, { from, to, total: summarize(rows), manual: rows.filter((r) => r.manual).length, days, hours, weekdays });
+  },
   // 이력 조회(M-11): 날짜·이름/연락처·레인 검색. format=csv이면 엑셀용 CSV로 내려준다
   'GET /api/admin/history': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
@@ -716,7 +757,9 @@ const api = {
     const lane = Number(q.get('lane'));
     if (lane) { where.push("(',' || lanes || ',') LIKE ?"); args.push(`%,${lane},%`); }
     const rows = db.prepare(`SELECT *, CASE WHEN assigned_at IS NOT NULL
-      THEN CAST(ROUND((julianday(assigned_at) - julianday(created_at)) * 1440) AS INTEGER) END AS wait_min
+      THEN CAST(ROUND((julianday(assigned_at) - julianday(created_at)) * 1440) AS INTEGER)
+      WHEN status = 'CANCELED' AND finished_at IS NOT NULL
+      THEN CAST(ROUND((julianday(finished_at) - julianday(created_at)) * 1440) AS INTEGER) END AS wait_min
       FROM entries WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 2000`).all(...args);
     const view = rows.map((e) => ({
       id: e.id, createdAt: e.created_at, name: e.name, phone: e.phone, partySize: e.party_size, status: e.status,

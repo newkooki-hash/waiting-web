@@ -172,6 +172,7 @@ mock.listen(0, () => server.listen(0, async () => {
     const hist = (await call('GET', '/api/admin/history')).body.entries;
     const hc = hist.find((e) => e.id === m.id);
     assert.ok(hc.manual && hc.status === 'CANCELED' && hc.cancelReason === '연락 두절');
+    assert.equal(hc.waitMin, 0); // 배정 없이 취소: 접수~취소 시간(분)
     assert.equal(hist.find((e) => e.id === ida).waitMin, 0);
     assert.deepEqual((await call('GET', '/api/admin/history?lane=5')).body.entries.map((e) => e.id), [ida]);
     assert.deepEqual((await call('GET', '/api/admin/history?lane=1')).body.entries, []);
@@ -432,6 +433,24 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/banners/remove', { id: b1 })).status, 200);
     assert.deepEqual(await ids(), [b2]);
     assert.equal((await call('POST', '/api/admin/banners/remove', { id: b1 })).status, 404);
+    // --- 통계 ---
+    assert.equal((await fetch(base + '/api/admin/stats')).status, 401);
+    assert.equal((await call('GET', '/api/admin/stats?from=2026-12-31&to=2026-01-01')).status, 400);
+    assert.equal((await call('GET', '/api/admin/stats?from=2020-01-01&to=2026-01-01')).status, 400); // 1년 초과
+    const st = (await call('GET', '/api/admin/stats')).body; // 기본: 오늘까지 30일
+    const sum = (list, k) => list.reduce((a, r) => a + r[k], 0);
+    assert.ok(st.total.teams > 0 && st.total.people >= st.total.teams);
+    assert.equal(st.total.assigned + st.total.canceled + st.total.waiting, st.total.teams); // 상태 합계가 접수 팀과 같다
+    assert.equal(sum(st.days, 'teams'), st.total.teams);
+    assert.equal(sum(st.hours, 'teams'), st.total.teams);
+    assert.equal(sum(st.weekdays, 'teams'), st.total.teams);
+    assert.equal(sum(st.days, 'canceled'), st.total.canceled);
+    assert.ok(st.manual > 0 && st.manual <= st.total.teams);
+    assert.ok(st.total.avgWait >= 0 && st.total.maxWait >= st.total.medianWait);
+    assert.ok(st.total.avgAssignedWait !== null && st.total.avgCanceledWait !== null); // 취소된 건도 대기 시간을 계산한다
+    assert.ok(st.hours.every((h) => h.hour >= 0 && h.hour <= 23) && st.weekdays.every((w) => w.dow >= 0 && w.dow <= 6));
+    const none = (await call('GET', '/api/admin/stats?from=2000-01-01&to=2000-01-31')).body;
+    assert.deepEqual([none.total.teams, none.total.avgWait, none.days.length], [0, null, 0]);
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);

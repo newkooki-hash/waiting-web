@@ -82,6 +82,15 @@
   .cal .ev { display:block; margin-top:2px; padding:0 4px; font-size:.72rem; line-height:1.35; border-radius:4px; background:var(--accent-soft); color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   @media (max-width:720px) { .cal .day { min-height:56px; padding:3px; } .cal .ev { font-size:.65rem; } }
 
+  /* 통계 */
+  .stat-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; }
+  .stat .num { font-size:1.8rem; font-weight:800; line-height:1.2; }
+  .bar-row { display:grid; grid-template-columns:44px 1fr 130px; gap:10px; align-items:center; padding:3px 0; }
+  .bar { height:14px; background:var(--bg); border-radius:7px; overflow:hidden; }
+  .bar span { display:block; height:100%; background:var(--accent); border-radius:7px; }
+  .bar-val { font-size:.85rem; color:var(--muted); text-align:right; }
+
   /* 완료 표 */
   .wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); }
   table { width:100%; border-collapse:collapse; }
@@ -140,6 +149,7 @@
         <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
         <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
         <a href="#history" data-view="history">이력 조회</a>
+        <a href="#stats" data-view="stats">통계</a>
         <a href="#tournaments" data-view="tournaments">대회 신청</a>
         <a href="#calendar" data-view="calendar">행사 일정</a>
         <a href="#notices" data-view="notices">공지·이미지</a>
@@ -289,6 +299,27 @@
       </div>
     </section>
 
+    <section id="v-stats" hidden>
+      <h2>통계</h2>
+      <p class="sub">접수일 기준입니다. 대기 시간은 접수부터 레인 배정까지이고, 배정 없이 취소된 건은 접수부터 취소까지입니다.</p>
+      <form id="sForm" class="panel field" style="margin-bottom:12px">
+        <input type="date" id="sFrom" aria-label="시작일" required>
+        <span>~</span>
+        <input type="date" id="sTo" aria-label="종료일" required>
+        <button class="primary">조회</button>
+        <button type="button" data-range="7">최근 7일</button>
+        <button type="button" data-range="30">최근 30일</button>
+        <button type="button" data-range="90">최근 90일</button>
+      </form>
+      <div id="sMsg" class="err" role="alert"></div>
+      <div id="sCards" class="stat-cards"></div>
+      <div class="panel" style="margin-top:16px"><h3>시간대별 접수</h3><div id="sHours"></div></div>
+      <div class="panel" style="margin-top:16px"><h3>요일별</h3>
+        <div class="wrap"><table><thead><tr><th>요일</th><th>접수 팀</th><th>인원</th><th>취소</th><th>평균 대기</th></tr></thead><tbody id="sWeek"></tbody></table></div></div>
+      <div class="panel" style="margin-top:16px"><h3>일별</h3>
+        <div class="wrap"><table><thead><tr><th>날짜</th><th>접수 팀</th><th>인원</th><th>배정</th><th>취소</th><th>평균 대기</th></tr></thead><tbody id="sDays"></tbody></table></div></div>
+    </section>
+
     <section id="v-members" hidden>
       <h2>회원관리</h2>
       <p class="sub">연락처와 이메일은 일부만 표시됩니다. 원문은 비밀번호를 다시 입력해야 볼 수 있고, 조회 기록이 남습니다.</p>
@@ -389,7 +420,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'intake'];
+const VIEWS = ['queue', 'done', 'history', 'stats', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -408,7 +439,36 @@ function route() {
   if (v === 'tournaments') loadTournaments();
   if (v === 'calendar') loadCalendar();
   if (v === 'notices') loadNotices();
+  if (v === 'stats') loadStats();
 }
+
+// 통계
+const minText = (v) => (v === null ? '-' : `${v}분`);
+const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+function setRange(days) { $('sTo').value = today(); $('sFrom').value = addDays(today(), -(days - 1)); }
+async function loadStats() {
+  if (!$('sTo').value) setRange(30);
+  $('sMsg').textContent = '';
+  const r = await fetch('/api/admin/stats?' + new URLSearchParams({ from: $('sFrom').value, to: $('sTo').value }));
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) return ($('sMsg').textContent = b.error || '조회에 실패했습니다.');
+  const t = b.total, rate = t.teams ? Math.round(t.canceled / t.teams * 1000) / 10 : 0;
+  const card = (label, value, sub) => `<div class="stat"><div class="meta">${label}</div><div class="num">${value}</div>${sub ? `<div class="meta">${sub}</div>` : ''}</div>`;
+  $('sCards').innerHTML = card('접수', `${t.teams}팀`, `${t.people}명 · 수기 ${b.manual}팀`) + card('배정', `${t.assigned}팀`, t.waiting ? `대기 중 ${t.waiting}팀` : '')
+    + card('취소율', `${rate}%`, `${t.canceled}팀 취소`) + card('평균 대기', minText(t.avgWait), `배정 ${minText(t.avgAssignedWait)} · 취소 ${minText(t.avgCanceledWait)}`) + card('대기 중앙값·최장', minText(t.medianWait), `최장 ${minText(t.maxWait)}`);
+  const peak = Math.max(1, ...b.hours.map((h) => h.teams));
+  $('sHours').innerHTML = b.hours.length ? b.hours.map((h) => `
+    <div class="bar-row"><span class="bar-label">${String(h.hour).padStart(2, '0')}시</span>
+    <span class="bar"><span style="width:${Math.round(h.teams / peak * 100)}%"></span></span>
+    <span class="bar-val">${h.teams}팀 · ${minText(h.avgWait)}</span></div>`).join('') : '<div class="meta">기간 내 접수가 없습니다.</div>';
+  const DOW = ['일', '월', '화', '수', '목', '금', '토'];
+  $('sWeek').innerHTML = b.weekdays.length ? b.weekdays.map((w) => `<tr><td>${DOW[w.dow]}</td><td>${w.teams}</td><td>${w.people}</td><td>${w.canceled}</td><td>${minText(w.avgWait)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty" style="border:0">자료가 없습니다.</td></tr>';
+  $('sDays').innerHTML = b.days.length ? [...b.days].reverse().map((d) => `<tr><td>${esc(d.day)}</td><td>${d.teams}</td><td>${d.people}</td><td>${d.assigned}</td><td>${d.canceled}</td><td>${minText(d.avgWait)}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="empty" style="border:0">자료가 없습니다.</td></tr>';
+}
+$('sForm').addEventListener('submit', (ev) => { ev.preventDefault(); loadStats(); });
+$('sForm').addEventListener('click', (ev) => { const b = ev.target.closest('button[data-range]'); if (b) { setRange(Number(b.dataset.range)); loadStats(); } });
 
 // 공지사항·이벤트 이미지
 let nList = [], nEditId = null;
