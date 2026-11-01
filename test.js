@@ -279,6 +279,15 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(listed.find((t) => t.id === tid).apply, 'open');
     assert.equal(listed.find((t) => t.id === future).apply, 'before');
     assert.equal(listed.find((t) => t.id === tid).mine, null);
+    // 대회일 다음 날부터는 손님 목록에서 빠지고 관리자 목록에는 남는다
+    const today = new Date().toLocaleDateString('sv');
+    const pastId = (await tour({ name: '지난 대회', eventAt: ts(-60 * 24 * 2), applyStart: ts(-60 * 24 * 9), applyEnd: ts(-60 * 24 * 3) })).body.id;
+    const todayId = (await tour({ name: '오늘 대회', eventAt: today + ' 23:59' })).body.id;
+    const visible = (await call('GET', '/api/tournaments')).body.tournaments.map((t) => t.id);
+    assert.ok(!visible.includes(pastId) && visible.includes(todayId) && visible.includes(tid));
+    const adminList = (await call('GET', '/api/admin/tournaments')).body.tournaments;
+    assert.deepEqual([adminList.find((t) => t.id === pastId).ended, adminList.find((t) => t.id === todayId).ended], [true, false]);
+    assert.equal((await call('GET', `/api/admin/tournaments/${pastId}/entries`)).status, 200); // 지난 대회 내역은 관리자가 볼 수 있다
     const entriesOf = async () => (await call('GET', `/api/admin/tournaments/${tid}/entries`)).body.entries;
     const statusOf = async (name) => (await entriesOf()).find((e) => e.name === name && e.status !== 'DELETED')?.status;
     // 대회는 정회원만 신청할 수 있다

@@ -737,11 +737,13 @@ const promoteWaitlist = (tid) => {
   if (free > 0) db.prepare("UPDATE tournament_entries SET status='PENDING' WHERE id IN (SELECT id FROM tournament_entries WHERE tournament_id=? AND status='WAITLIST' ORDER BY id LIMIT ?)").run(tid, free);
 };
 const applyWindow = (t, now = nowTs()) => (now < t.apply_start ? 'before' : now > t.apply_end ? 'closed' : 'open');
+// 대회일 다음 날부터는 손님 목록에서 숨기고, 관리자 목록에는 지난 대회로 남긴다
+const eventEnded = (t) => t.event_at.slice(0, 10) < new Date().toLocaleDateString('sv');
 const tournamentApplying = () => db.prepare('SELECT * FROM tournaments').all().some((t) => applyWindow(t) === 'open');
 const tournamentView = (t, userId) => {
   const mine = userId && db.prepare("SELECT status FROM tournament_entries WHERE tournament_id=? AND user_id=? AND status<>'DELETED'").get(t.id, userId);
   return {
-    id: t.id, name: t.name, eventAt: t.event_at, applyStart: t.apply_start, applyEnd: t.apply_end, capacity: t.capacity,
+    id: t.id, name: t.name, ended: eventEnded(t), eventAt: t.event_at, applyStart: t.apply_start, applyEnd: t.apply_end, capacity: t.capacity,
     fee: t.fee, info: t.info || '', apply: applyWindow(t), taken: seatsTaken(t.id), mine: mine?.status || null,
     waitlist: db.prepare("SELECT COUNT(*) n FROM tournament_entries WHERE tournament_id=? AND status='WAITLIST'").get(t.id).n,
   };
@@ -769,7 +771,7 @@ async function handleTournaments(req, res, url) {
   // --- 손님 ---
   if (req.method === 'GET' && path === '/api/tournaments') {
     const user = currentUser(req);
-    const rows = db.prepare("SELECT * FROM tournaments WHERE event_at >= date('now','localtime','-1 day') ORDER BY event_at").all();
+    const rows = db.prepare('SELECT * FROM tournaments ORDER BY event_at').all().filter((t) => !eventEnded(t));
     json(res, 200, { tournaments: rows.map((t) => tournamentView(t, user?.id)) });
     return true;
   }

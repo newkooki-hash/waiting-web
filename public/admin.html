@@ -350,9 +350,13 @@ async function loadTournaments() {
   const r = await fetch('/api/admin/tournaments');
   if (!r.ok) return;
   tList = (await r.json()).tournaments;
-  $('tRows').innerHTML = tList.length ? tList.map((t) => `
-    <tr data-id="${t.id}"><td><strong>${esc(t.name)}</strong>${t.fee ? `<div class="meta">참가비 ${t.fee.toLocaleString()}원</div>` : ''}</td>
-    <td>${esc(t.eventAt)}</td><td>${esc(t.applyStart)} ~ ${esc(t.applyEnd)}<div class="meta">${T_APPLY[t.apply]}</div></td>
+  // 예정 대회는 가까운 순, 지난 대회는 최근 순으로 아래에 모아 보여 준다
+  const upcoming = tList.filter((t) => !t.ended).sort((a, b) => a.eventAt.localeCompare(b.eventAt));
+  const past = tList.filter((t) => t.ended).sort((a, b) => b.eventAt.localeCompare(a.eventAt));
+  const ordered = [...upcoming, ...past];
+  $('tRows').innerHTML = tList.length ? ordered.map((t, i) => (i === upcoming.length && past.length ? '<tr><td colspan="5" class="meta" style="background:var(--bg)">지난 대회</td></tr>' : '') + `
+    <tr data-id="${t.id}" style="${t.ended ? 'opacity:.6' : ''}"><td><strong>${esc(t.name)}</strong>${t.fee ? `<div class="meta">참가비 ${t.fee.toLocaleString()}원</div>` : ''}</td>
+    <td>${esc(t.eventAt)}</td><td>${esc(t.applyStart)} ~ ${esc(t.applyEnd)}<div class="meta">${t.ended ? '종료' : T_APPLY[t.apply]}</div></td>
     <td>${t.taken} / ${t.capacity}명${t.waitlist ? ` · 대기 ${t.waitlist}` : ''}</td>
     <td class="actions"><button data-t="entries">신청자</button><button data-t="edit">수정</button></td></tr>`).join('')
     : '<tr><td colspan="5" class="empty" style="border:0">등록된 대회가 없습니다.</td></tr>';
