@@ -59,7 +59,7 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).body.code, 'QR_REQUIRED');
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'QR_REQUIRED');
     assert.equal((await call('GET', '/api/me')).body.intake.allowed, false);
-    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
     const qrToken = () => call('GET', '/api/admin/intake').then((r) => new URL(r.body.url).searchParams.get('t'));
     const scan = (t) => call('GET', `/?t=${t}`, null, { raw: true });
     assert.equal((await scan('wrong')).location, '/?qr=invalid');
@@ -78,14 +78,14 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('GET', '/api/me')).body.intake.allowed, true);
     delete jar.admin; // 아래 관리자 섹션에서 다시 로그인
     // 관리자 세션은 DB에 저장되고 쓸 때마다 쿠키 만료(7일)가 연장된다
-    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
     const roll = await fetch(base + '/api/admin/intake', { headers: { cookie: `admin=${jar.admin}` } });
     assert.match(roll.headers.getSetCookie().join(';'), /admin=.*Max-Age=604800/);
     assert.equal((await fetch(base + '/api/admin/intake', { headers: { cookie: 'admin=bogus' } })).status, 401);
     delete jar.admin;
 
     // --- 접수 가능 시간 ---
-    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
     const sched = (enabled, start, end) => call('POST', '/api/admin/intake/schedule', { enabled, start, end });
     const hm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
@@ -131,8 +131,10 @@ mock.listen(0, () => server.listen(0, async () => {
 
     // --- 관리자 ---
     assert.equal((await call('GET', '/api/admin/entries')).status, 401);
-    assert.equal((await call('POST', '/api/admin/login', { password: 'x' })).status, 401);
-    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'x' })).status, 401);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'other', password: 'pw' })).status, 401); // 아이디도 맞아야 한다
+    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 401);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
     const list = (await call('GET', '/api/admin/entries')).body.entries;
     assert.equal(list.length, 1);
     assert.equal(list[0].name, '홍길동');
@@ -227,7 +229,7 @@ mock.listen(0, () => server.listen(0, async () => {
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);
     assert.equal((await fetch(base + '/api/admin/entries', { headers: { cookie: `admin=${sess}` } })).status, 401);
-    assert.equal((await call('POST', '/api/admin/login', { password: 'pw' })).status, 200);
+    assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
     // --- 인증번호 발송 한도: 한 번호로 다른 계정이 연달아 요청하면 막는다 ---
     const login = async (id) => {
       mockId = id;
@@ -242,8 +244,8 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(limited.status, 429);
     assert.match(limited.body.error, /횟수/);
     // --- 관리자 로그인 시도 제한: 5회 실패하면 올바른 비밀번호도 막는다 ---
-    for (let i = 0; i < 5; i++) assert.equal((await call('POST', '/api/admin/login', { password: 'bad' })).status, 401);
-    const locked = await call('POST', '/api/admin/login', { password: 'pw' });
+    for (let i = 0; i < 5; i++) assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'bad' })).status, 401);
+    const locked = await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' });
     assert.equal(locked.status, 429);
     assert.match(locked.body.error, /분 뒤/);
     console.log('모든 테스트 통과');

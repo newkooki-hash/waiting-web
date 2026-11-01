@@ -8,7 +8,13 @@ const oauth = require('./oauth');
 const sms = require('./sms');
 
 const PORT = process.env.PORT || 3000;
+// 관리자는 운영자 공용 계정 하나(아이디+비밀번호)를 함께 쓴다. 권한 구분 없음
+const ADMIN_ID = process.env.ADMIN_ID || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin1234';
+const sameSecret = (a, b) => { // 길이와 상관없이 같은 시간에 비교한다
+  const h = (v) => crypto.createHash('sha256').update(String(v ?? '')).digest();
+  return crypto.timingSafeEqual(h(a), h(b));
+};
 const ADMIN_HOST = process.env.ADMIN_HOST; // 예: admin.orandabowling.co.kr. 비우면 호스트 구분 없음(개발용)
 const LANES = 18;
 const MAX_PARTY = 8;
@@ -292,9 +298,9 @@ const api = {
       const mins = Math.max(1, Math.ceil((oldest + LOGIN_WINDOW_MS - now) / 60000));
       return json(res, 429, { error: `로그인 시도가 너무 많습니다. ${mins}분 뒤에 다시 시도하세요.` });
     }
-    if (b.password !== ADMIN_PASSWORD) {
+    if (!sameSecret(b.id, ADMIN_ID) || !sameSecret(b.password, ADMIN_PASSWORD)) {
       loginFails.set(ip, [...mine, now]); loginFailsAll.push(now);
-      return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
+      return json(res, 401, { error: '아이디 또는 비밀번호가 틀렸습니다.' });
     }
     loginFails.delete(ip);
     const s = crypto.randomBytes(24).toString('hex');

@@ -114,6 +114,7 @@
 <body>
 <form id="login" hidden>
   <h1>오란다 볼링 관리자</h1>
+  <input id="uid" type="text" placeholder="아이디" autocomplete="username" required>
   <input id="pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
   <button class="primary">로그인</button>
   <div id="loginErr" class="err" role="alert"></div>
@@ -434,7 +435,7 @@ $('printQr').onclick = () => window.print();
 
 $('login').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const r = await post('/api/admin/login', { password: $('pw').value });
+  const r = await post('/api/admin/login', { id: $('uid').value.trim(), password: $('pw').value });
   if (!r.ok) return ($('loginErr').textContent = r.body.error);
   $('pw').value = '';
   load();
