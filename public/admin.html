@@ -336,9 +336,16 @@
         <input type="file" id="mFile" accept=".csv,text/csv" aria-label="가져올 CSV 파일">
         <button type="button" id="mImport">CSV 가져오기</button>
       </form>
+      <form id="liftForm" class="panel field" style="margin-bottom:12px">
+        <strong>재가입 제한 해제</strong>
+        <input type="text" id="liftPhone" placeholder="탈퇴한 번호" inputmode="numeric" required style="width:150px">
+        <button>해제</button>
+        <span class="hint" style="margin:0">탈퇴한 번호는 일정 기간 다시 가입할 수 없습니다.</span>
+        <span id="liftMsg" role="status"></span>
+      </form>
       <div id="mReport" class="panel" hidden></div>
       <div class="wrap"><table>
-        <thead><tr><th>이름</th><th>나이</th><th>성별</th><th>연락처</th><th>이메일</th><th>가입일</th><th>구분</th><th></th></tr></thead>
+        <thead><tr><th>이름</th><th>나이</th><th>성별</th><th>연락처</th><th>이메일</th><th>가입일</th><th>마지막 이용</th><th>구분</th><th></th></tr></thead>
         <tbody id="mRows"></tbody>
       </table></div>
       <div class="field" style="margin-top:12px">
@@ -733,12 +740,19 @@ async function loadMembers() {
   mLast = Math.max(1, Math.ceil(total / size));
   $('mRows').innerHTML = entries.length ? entries.map((m) => `
     <tr data-id="${m.id}"><td><strong>${esc(m.name)}</strong></td><td>${m.age ?? ''}</td><td>${esc(m.gender)}</td>
-    <td>${esc(m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td>
-    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button data-m="reveal">원문</button><button data-m="log">이력</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
-    : '<tr><td colspan="8" class="empty" style="border:0">회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</td></tr>';
+    <td>${esc(m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td><td>${esc(m.lastUsedAt) || '-'}</td>
+    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button data-m="reveal">원문</button><button class="danger" data-m="delete">삭제</button><button data-m="log">이력</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
+    : '<tr><td colspan="9" class="empty" style="border:0">회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</td></tr>';
   $('mPage').textContent = `${mPage} / ${mLast}쪽 · 총 ${total}명`;
   $('mPrev').disabled = mPage <= 1; $('mNext').disabled = mPage >= mLast;
 }
+$('liftForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const r = await post('/api/admin/withdrawals/lift', { phone: $('liftPhone').value });
+  $('liftMsg').style.color = r.ok ? 'var(--ok)' : 'var(--bad)';
+  $('liftMsg').textContent = r.ok ? '해제되었습니다.' : r.body.error || '해제에 실패했습니다.';
+  if (r.ok) ev.target.reset();
+});
 $('mSearch').addEventListener('submit', (ev) => { ev.preventDefault(); mPage = 1; loadMembers(); });
 $('mPrev').onclick = () => { mPage--; loadMembers(); };
 $('mNext').onclick = () => { mPage++; loadMembers(); };
@@ -752,6 +766,11 @@ $('mRows').addEventListener('click', (ev) => {
         : '<div class="meta">기록이 없습니다.</div>';
       $('logDlg').showModal();
     });
+  }
+  if (btn.dataset.m === 'delete') {
+    const name = btn.closest('tr').querySelector('strong').textContent;
+    if (!confirm(`'${name}' 회원을 삭제할까요?\n회원 정보가 지워지고 접수·대회 기록은 이름과 연락처가 지워진 채 통계용으로만 남습니다. 되돌릴 수 없습니다.`)) return;
+    return post('/api/admin/members/delete', { id: Number(btn.closest('tr').dataset.id) }).then((r) => { if (!r.ok) alert(r.body.error || '삭제에 실패했습니다.'); loadMembers(); });
   }
   if (btn.dataset.m === 'tier') {
     const to = btn.dataset.tier;

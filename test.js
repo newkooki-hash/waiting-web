@@ -518,6 +518,66 @@ mock.listen(0, () => server.listen(0, async () => {
     const limited = await call('POST', '/api/phone/send', { phone: '01099998888' });
     assert.equal(limited.status, 429);
     assert.match(limited.body.error, /횟수/);
+    // --- 회원 탈퇴·삭제, 재가입 제한, 마지막 이용일 ---
+    const verifyPhone = async (phone) => {
+      assert.equal((await call('POST', '/api/phone/send', { phone })).status, 200);
+      assert.equal((await call('POST', '/api/phone/verify', { code: lastCode })).status, 200);
+    };
+    const findMember = async (q) => (await call('GET', `/api/admin/members?q=${q}`)).body;
+    await login(5001);
+    await verifyPhone('01055550001');
+    const wEntry = (await call('POST', '/api/entries', { partySize: 2 })).body.token;
+    assert.ok(wEntry);
+    const wm = (await findMember('01055550001')).entries[0];
+    assert.equal(wm.lastUsedAt, new Date().toLocaleDateString('sv')); // 접수하면 마지막 이용일이 기록된다
+    await call('POST', '/api/admin/blacklist', { phone: '01066660000', name: '차단대상', reason: '반복 노쇼' });
+    // 대회에 입금이 확인된 신청이 있으면 탈퇴할 수 없다
+    const wt = (await tour({ name: '탈퇴 시험 대회', capacity: 50 })).body.id;
+    assert.equal((await call('POST', '/api/tournament-profile', { birthDate: '1985-03-04', gender: 'f' })).status, 200);
+    assert.equal((await call('POST', `/api/tournaments/${wt}/apply`)).status, 201);
+    const wte = (await call('GET', `/api/admin/tournaments/${wt}/entries`)).body.entries[0];
+    assert.equal((await call('POST', `/api/admin/tournament-entries/${wte.id}/confirm`)).status, 200);
+    assert.equal((await call('POST', '/api/me/withdraw', {})).status, 400); // 확인 없이는 안 됨
+    const blockedW = await call('POST', '/api/me/withdraw', { confirm: true });
+    assert.deepEqual([blockedW.status, blockedW.body.code], [409, 'HAS_PAID_ENTRY']);
+    assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동'); // 막히면 아무것도 바뀌지 않는다
+    await call('POST', `/api/admin/tournament-entries/${wte.id}/delete`, { reason: '환불 완료', refundMemo: '계좌 환불' });
+    assert.equal((await fetch(base + '/api/me/withdraw', { method: 'POST' })).status, 401);
+    const done = await call('POST', '/api/me/withdraw', { confirm: true });
+    assert.deepEqual([done.status, done.body.blockedDays], [200, 30]);
+    assert.equal((await call('GET', '/api/me')).body.user, null); // 로그아웃됨
+    assert.equal((await findMember('01055550001')).total, 0); // 회원 삭제
+    assert.equal((await call('GET', `/api/admin/members/log?id=${wm.id}`)).body.entries.length, 0); // 변경 이력도 삭제
+    const gone = (await call('GET', '/api/admin/history?from=2000-01-01&to=2999-12-31')).body.entries;
+    assert.equal(gone.filter((e) => e.phone === '01055550001').length, 0);
+    const anon = gone.find((e) => e.name === '삭제됨' && e.cancelReason === '탈퇴'); // 대기 중이던 접수는 취소되고 익명화
+    assert.ok(anon && anon.status === 'CANCELED' && anon.phone === '');
+    assert.equal((await call('GET', `/api/admin/tournaments/${wt}/entries`)).body.entries[0].name, '삭제됨');
+    assert.equal((await call('GET', `/api/entries/${wEntry}`)).body.name, '삭제됨');
+    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.some((b) => b.phone === '01066660000'), true); // 블랙리스트는 유지
+    // 재가입 제한: 같은 소셜 계정, 같은 번호
+    assert.equal((await call('GET', '/auth/kakao', null, { raw: true })).status, 302);
+    mockId = 5001; await call('POST', '/api/logout');
+    const stW = new URL((await call('GET', '/auth/kakao', null, { raw: true })).location).searchParams.get('state');
+    assert.equal((await call('GET', `/auth/kakao/callback?code=c&state=${stW}`, null, { raw: true })).location, '/?login=withdrawn');
+    assert.equal((await call('GET', '/api/me')).body.user, null);
+    await login(5002); // 다른 소셜 계정이어도 번호가 같으면 막는다
+    const rejoin = await call('POST', '/api/phone/send', { phone: '01055550001' });
+    assert.deepEqual([rejoin.status, rejoin.body.code], [403, 'REJOIN_BLOCKED']);
+    assert.match(rejoin.body.error, /\d{4}-\d\d-\d\d까지/);
+    assert.equal((await call('POST', '/api/admin/withdrawals/lift', { phone: '123' })).status, 400);
+    assert.equal((await call('POST', '/api/admin/withdrawals/lift', { phone: '01099990000' })).status, 404); // 제한 중이 아닌 번호
+    assert.equal((await call('POST', '/api/admin/withdrawals/lift', { phone: '01055550001' })).status, 200);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01055550001' })).status, 200); // 해제 후에는 가입 가능
+    // 관리자가 이관 회원을 삭제하는 경우(소셜 계정이 없는 회원)
+    await call('POST', '/api/admin/members/import', { csv: 'name,phone,email\r\n삭제대상,01066660000,gone@example.com' });
+    const im = (await findMember('01066660000')).entries[0];
+    assert.equal((await call('POST', '/api/admin/members/delete', { id: 99999 })).status, 404);
+    assert.equal((await fetch(base + '/api/admin/members/delete', { method: 'POST' })).status, 401);
+    assert.equal((await call('POST', '/api/admin/members/delete', { id: im.id })).status, 200);
+    assert.equal((await findMember('01066660000')).total, 0);
+    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.some((b) => b.phone === '01066660000'), true); // 블랙리스트는 그대로
+    assert.equal((await call('POST', '/api/admin/withdrawals/lift', { phone: '01066660000' })).status, 200); // 관리자 삭제도 제한이 걸려 있었다
     // --- 관리자 로그인 시도 제한: 5회 실패하면 올바른 비밀번호도 막는다 ---
     for (let i = 0; i < 5; i++) assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'bad' })).status, 401);
     const locked = await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' });

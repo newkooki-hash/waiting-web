@@ -45,7 +45,7 @@
   </section>
 
   <div id="userbar" class="muted" hidden style="display:flex;justify-content:space-between;margin-bottom:8px">
-    <span id="me"></span><a href="#" id="logout">로그아웃</a>
+    <span id="me"></span><span><a href="#" id="withdraw">회원 탈퇴</a> · <a href="#" id="logout">로그아웃</a></span>
   </div>
 
   <section id="consent" class="card" hidden>
@@ -215,6 +215,17 @@ $('checkCode').onclick = async () => {
   if (!r.ok) { $('verr').textContent = r.body.error || '인증에 실패했습니다.'; return; }
   load();
 };
+
+$('withdraw').onclick = async (ev) => {
+  ev.preventDefault();
+  if (!confirm('탈퇴하면 회원 정보가 삭제되고 대기 중인 접수는 취소됩니다. 일정 기간 동안은 다시 가입할 수 없습니다. 탈퇴할까요?')) return;
+  const r = await fetch('/api/me/withdraw', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) return alert(b.error || '탈퇴에 실패했습니다.');
+  alert('탈퇴가 완료되었습니다.');
+  location.href = '/tournament';
+};
+
 $('logout').onclick = async (ev) => { ev.preventDefault(); await post('/api/logout'); profileLoaded = false; load(); };
 
 load();

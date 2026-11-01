@@ -49,7 +49,7 @@
   </section>
 
   <div id="userbar" class="muted" hidden style="display:flex;justify-content:space-between;margin-bottom:8px">
-    <span id="me"></span><a href="#" id="logout">로그아웃</a>
+    <span id="me"></span><span><a href="#" id="withdraw">회원 탈퇴</a> · <a href="#" id="logout">로그아웃</a></span>
   </div>
 
   <section id="consent" class="card" hidden>
@@ -144,7 +144,7 @@ function showForm() {
     $('providers').innerHTML = me.providers.map((p) => `<a class="sso ${p.id}" href="/auth/${p.id}">${p.label}로 시작하기</a>`).join('')
       || '<div class="muted center">로그인 설정이 아직 되어 있지 않습니다.</div>';
     const q = new URLSearchParams(location.search).get('login');
-    $('loginErr').textContent = q === 'failed' ? '로그인에 실패했습니다. 다시 시도해 주세요.' : '';
+    $('loginErr').textContent = q === 'failed' ? '로그인에 실패했습니다. 다시 시도해 주세요.' : q === 'withdrawn' ? '탈퇴 후 일정 기간 동안은 다시 가입할 수 없습니다. 문의는 매장으로 해 주세요.' : '';
   }
 }
 
@@ -241,6 +241,17 @@ $('cancel').addEventListener('click', async () => {
   await fetch(`/api/entries/${token}/cancel`, { method: 'POST' });
   refresh();
 });
+
+
+$('withdraw').onclick = async (ev) => {
+  ev.preventDefault();
+  if (!confirm('탈퇴하면 회원 정보가 삭제되고 대기 중인 접수는 취소됩니다. 일정 기간 동안은 다시 가입할 수 없습니다. 탈퇴할까요?')) return;
+  const r = await fetch('/api/me/withdraw', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) return alert(b.error || '탈퇴에 실패했습니다.');
+  alert('탈퇴가 완료되었습니다.');
+  store.clear(); location.href = '/';
+};
 
 $('logout').onclick = async (ev) => {
   ev.preventDefault();
