@@ -128,6 +128,7 @@
         <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
         <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
         <a href="#history" data-view="history">이력 조회</a>
+        <a href="#members" data-view="members">회원관리</a>
         <a href="#blacklist" data-view="blacklist">블랙리스트</a>
         <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
       </nav>
@@ -177,6 +178,35 @@
         <tbody id="hRows"></tbody>
       </table></div>
       <div id="hCount" class="hint"></div>
+    </section>
+
+    <section id="v-members" hidden>
+      <h2>회원관리</h2>
+      <p class="sub">연락처와 이메일은 일부만 표시됩니다. 원문은 비밀번호를 다시 입력해야 볼 수 있고, 조회 기록이 남습니다.</p>
+      <form id="mSearch" class="panel field" style="margin-bottom:12px">
+        <input type="text" id="mQ" placeholder="이름·연락처·이메일 검색" style="width:240px">
+        <button class="primary">검색</button>
+        <span style="flex:1"></span>
+        <input type="file" id="mFile" accept=".csv,text/csv" aria-label="가져올 CSV 파일">
+        <button type="button" id="mImport">CSV 가져오기</button>
+      </form>
+      <div id="mReport" class="panel" hidden></div>
+      <div class="wrap"><table>
+        <thead><tr><th>이름</th><th>나이</th><th>성별</th><th>연락처</th><th>이메일</th><th>가입일</th><th>구분</th><th></th></tr></thead>
+        <tbody id="mRows"></tbody>
+      </table></div>
+      <div class="field" style="margin-top:12px">
+        <button id="mPrev">이전</button><span id="mPage" role="status"></span><button id="mNext">다음</button>
+      </div>
+      <dialog id="revealDlg">
+        <form method="dialog" id="revealForm" style="display:grid;gap:10px;min-width:260px">
+          <strong>원문 보기</strong>
+          <input type="password" id="revealPw" placeholder="관리자 비밀번호" autocomplete="current-password" required>
+          <div id="revealOut" role="status"></div>
+          <div class="err" id="revealErr" role="alert"></div>
+          <div class="actions"><button type="button" id="revealClose">닫기</button><button class="primary" id="revealGo">확인</button></div>
+        </form>
+      </dialog>
     </section>
 
     <section id="v-blacklist" hidden>
@@ -243,7 +273,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'blacklist', 'intake'];
+const VIEWS = ['queue', 'done', 'history', 'members', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -258,7 +288,65 @@ function route() {
   document.querySelectorAll('nav a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   if (v === 'history') loadHistory();
   if (v === 'blacklist') loadBlacklist();
+  if (v === 'members') loadMembers();
 }
+
+// 회원관리
+let mPage = 1, mLast = 1, revealId;
+async function loadMembers() {
+  const r = await fetch('/api/admin/members?' + new URLSearchParams({ q: $('mQ').value, page: mPage }));
+  if (!r.ok) return;
+  const { entries, total, size } = await r.json();
+  mLast = Math.max(1, Math.ceil(total / size));
+  $('mRows').innerHTML = entries.length ? entries.map((m) => `
+    <tr data-id="${m.id}"><td><strong>${esc(m.name)}</strong></td><td>${m.age ?? ''}</td><td>${esc(m.gender)}</td>
+    <td>${esc(m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td>
+    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}</td><td><button data-m="reveal">원문</button></td></tr>`).join('')
+    : '<tr><td colspan="8" class="empty" style="border:0">회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</td></tr>';
+  $('mPage').textContent = `${mPage} / ${mLast}쪽 · 총 ${total}명`;
+  $('mPrev').disabled = mPage <= 1; $('mNext').disabled = mPage >= mLast;
+}
+$('mSearch').addEventListener('submit', (ev) => { ev.preventDefault(); mPage = 1; loadMembers(); });
+$('mPrev').onclick = () => { mPage--; loadMembers(); };
+$('mNext').onclick = () => { mPage++; loadMembers(); };
+$('mRows').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-m]');
+  if (!btn) return;
+  revealId = Number(btn.closest('tr').dataset.id);
+  $('revealPw').value = ''; $('revealOut').textContent = ''; $('revealErr').textContent = ''; $('revealGo').hidden = false;
+  $('revealDlg').showModal();
+});
+$('revealClose').onclick = () => { $('revealOut').textContent = ''; $('revealDlg').close(); };
+$('revealForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const r = await post('/api/admin/members/reveal', { id: revealId, password: $('revealPw').value });
+  $('revealPw').value = '';
+  if (!r.ok) return ($('revealErr').textContent = r.body.error || '조회에 실패했습니다.');
+  $('revealErr').textContent = '';
+  $('revealOut').textContent = `${r.body.phone}  ${r.body.email}`;
+  $('revealGo').hidden = true; // 닫기 전까지만 보인다
+});
+$('mImport').onclick = async () => {
+  const file = $('mFile').files[0];
+  if (!file) return alert('가져올 CSV 파일을 선택하세요.');
+  const csv = await file.text();
+  $('mImport').disabled = true;
+  const r = await post('/api/admin/members/import', { csv });
+  $('mImport').disabled = false;
+  const box = $('mReport'); box.hidden = false;
+  if (!r.ok) return (box.innerHTML = `<span class="err">${esc(r.body.error || '가져오기에 실패했습니다.')}</span>`);
+  const b = r.body;
+  box.innerHTML = `<strong>가져오기 결과</strong> 전체 ${b.total}건 · 추가 ${b.imported}건 · 중복 건너뜀 ${b.duplicate}건 · 오류 ${b.errors.length}건`
+    + (b.errors.length ? ' <button id="mErrCsv">오류 행 내려받기</button>' : '');
+  if (b.errors.length) $('mErrCsv').onclick = () => {
+    const cell = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const text = '﻿' + [['줄', '사유', '원본'], ...b.errors.map((e) => [e.line, e.reason, e.row.join(' | ')])].map((x) => x.map(cell).join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' })); a.download = 'member_import_errors.csv'; a.click();
+  };
+  $('mFile').value = '';
+  mPage = 1; loadMembers();
+};
 
 async function loadBlacklist() {
   const r = await fetch('/api/admin/blacklist');

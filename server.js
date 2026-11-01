@@ -56,6 +56,31 @@ const addBlacklist = (phone, name, reason) => {
     WHERE phone=? AND status IN ('WAITING','CALLED')`).run(phone);
   notify();
 };
+// 회원: 현행 시스템에서 가져온 회원(이관)과 신규 가입자(가입)를 한 목록으로 관리한다.
+// 소셜 계정이 번호 인증을 마치면 같은 번호의 회원과 연결된다(없으면 새 회원으로 추가)
+db.exec(`CREATE TABLE IF NOT EXISTS members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL UNIQUE,
+  email TEXT,
+  gender TEXT,
+  birth_year INTEGER,
+  joined_at TEXT,
+  source TEXT NOT NULL,
+  user_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS pii_view_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id TEXT NOT NULL,
+  member_id INTEGER NOT NULL,
+  ip TEXT,
+  viewed_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+const linkMember = (user, phone) => {
+  if (db.prepare('UPDATE members SET user_id=? WHERE phone=?').run(user.id, phone).changes) return;
+  db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, phone, user.id);
+};
 // 대기 순서(seq): 접수 순으로 늘어나고, 양보·맨뒤로 보내기가 이 값을 바꾼다
 try { db.exec('ALTER TABLE entries ADD COLUMN seq INTEGER'); } catch {}
 db.exec(`UPDATE entries SET seq=id WHERE seq IS NULL;
@@ -127,6 +152,37 @@ const MAX_ATTEMPTS = 5;
 const CODE_SECRET = process.env.CODE_SECRET || crypto.randomBytes(32).toString('hex');
 const hashCode = (code) => crypto.createHmac('sha256', CODE_SECRET).update(code).digest('hex');
 const maskPhone = (p) => p && `${p.slice(0, 3)}-****-${p.slice(-4)}`;
+const maskEmail = (e) => { // abc@x.com → a**@x.com
+  if (!e) return '';
+  const [id, host = ''] = e.split('@');
+  return `${id.slice(0, 1)}${'*'.repeat(Math.max(2, id.length - 1))}@${host}`;
+};
+// 현행 회원의 출생연도는 직접 입력한 글이라 "2001.04.11", "2005년 8월 1일" 같은 값이 섞여 있다.
+// 앞쪽의 4자리 연도만 쓰고, 읽을 수 없으면 비워 둔다(가져오기 오류로 보지 않음)
+const birthYear = (text, thisYear) => {
+  const y = Number(String(text).trim().match(/^(19|20)\d\d/)?.[0]);
+  return y >= 1900 && y <= thisYear ? y : null;
+};
+const parseCsv = (text) => { // 따옴표·줄바꿈·BOM을 처리하는 최소 CSV 파서
+  const rows = [[]];
+  let cell = '', quoted = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { rows.at(-1).push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      rows.at(-1).push(cell); cell = ''; rows.push([]);
+    } else cell += c;
+  }
+  rows.at(-1).push(cell);
+  return rows.filter((r) => r.length > 1 || r[0] !== '');
+};
 
 const ACTIVE = "('WAITING','CALLED')"; // 중복 접수 판단: 배정 완료되면 다시 접수 가능
 // 관리자 세션: DB에 저장하고 쿠키로 유지한다. 사용할 때마다 만료가 7일 뒤로 밀린다(롤링)
@@ -139,6 +195,18 @@ const LOGIN_MAX_FAILS_ALL = 30;
 const loginFails = new Map(); // IP → 실패 시각 목록
 let loginFailsAll = [];
 const recentFails = (list, now) => list.filter((t) => now - t < LOGIN_WINDOW_MS);
+// 잠겨 있으면 안내 문구를, 아니면 null을 돌려준다. 로그인과 개인정보 원문 조회의 비밀번호 입력이 함께 쓴다
+const passwordLocked = (ip, now = Date.now()) => {
+  const mine = recentFails(loginFails.get(ip) || [], now);
+  loginFailsAll = recentFails(loginFailsAll, now);
+  if (mine.length < LOGIN_MAX_FAILS && loginFailsAll.length < LOGIN_MAX_FAILS_ALL) return null;
+  const oldest = (mine.length >= LOGIN_MAX_FAILS ? mine : loginFailsAll)[0];
+  return `로그인 시도가 너무 많습니다. ${Math.max(1, Math.ceil((oldest + LOGIN_WINDOW_MS - now) / 60000))}분 뒤에 다시 시도하세요.`;
+};
+const recordPasswordFail = (ip, now = Date.now()) => {
+  loginFails.set(ip, [...recentFails(loginFails.get(ip) || [], now), now]);
+  loginFailsAll.push(now);
+};
 const listeners = new Set();
 const notify = () => listeners.forEach((res) => res.write('data: changed\n\n'));
 
@@ -266,6 +334,7 @@ const api = {
       db.prepare("UPDATE users SET phone=?, phone_verified_at=datetime('now','localtime') WHERE id=?").run(row.phone, user.id);
     } catch { return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' }); }
     db.prepare('UPDATE sms_codes SET used=1 WHERE user_id=?').run(user.id);
+    linkMember(user, row.phone);
     json(res, 200, { ok: true, phone: maskPhone(row.phone) });
   },
   'POST /api/entries': async (req, res) => {
@@ -290,16 +359,11 @@ const api = {
   },
   'POST /api/admin/login': async (req, res) => {
     const b = await readBody(req);
-    const now = Date.now(), ip = clientIp(req);
-    const mine = recentFails(loginFails.get(ip) || [], now);
-    loginFailsAll = recentFails(loginFailsAll, now);
-    if (mine.length >= LOGIN_MAX_FAILS || loginFailsAll.length >= LOGIN_MAX_FAILS_ALL) {
-      const oldest = (mine.length >= LOGIN_MAX_FAILS ? mine : loginFailsAll)[0];
-      const mins = Math.max(1, Math.ceil((oldest + LOGIN_WINDOW_MS - now) / 60000));
-      return json(res, 429, { error: `로그인 시도가 너무 많습니다. ${mins}분 뒤에 다시 시도하세요.` });
-    }
+    const ip = clientIp(req);
+    const locked = passwordLocked(ip);
+    if (locked) return json(res, 429, { error: locked });
     if (!sameSecret(b.id, ADMIN_ID) || !sameSecret(b.password, ADMIN_PASSWORD)) {
-      loginFails.set(ip, [...mine, now]); loginFailsAll.push(now);
+      recordPasswordFail(ip);
       return json(res, 401, { error: '아이디 또는 비밀번호가 틀렸습니다.' });
     }
     loginFails.delete(ip);
@@ -387,6 +451,76 @@ const api = {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     db.prepare('DELETE FROM blacklist WHERE id=?').run(Number((await readBody(req)).id));
     json(res, 200, { ok: true });
+  },
+  // 회원 목록(M-14): 연락처·이메일은 마스킹해서 내려보낸다(M-15)
+  'GET /api/admin/members': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const q = new URL(req.url, 'http://x').searchParams;
+    const kw = (q.get('q') || '').trim();
+    const page = Math.max(1, Number(q.get('page')) || 1), size = 50;
+    const where = [], args = [];
+    if (kw) {
+      const like = `%${kw.replace(/[\\%_]/g, '\\$&')}%`;
+      where.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')");
+      args.push(like, like, like);
+    }
+    const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const total = db.prepare(`SELECT COUNT(*) n FROM members ${w}`).get(...args).n;
+    const year = new Date().getFullYear();
+    const rows = db.prepare(`SELECT * FROM members ${w} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, size, (page - 1) * size);
+    json(res, 200, {
+      total, page, size,
+      entries: rows.map((m) => ({
+        id: m.id, name: m.name, age: m.birth_year ? year - m.birth_year : null, gender: m.gender || '',
+        phone: maskPhone(m.phone), email: maskEmail(m.email), source: m.source, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
+      })),
+    });
+  },
+  // 개인정보 원문 조회(결정 11): 관리자 비밀번호를 다시 입력해야 하고, 조회 기록을 남긴다
+  'POST /api/admin/members/reveal': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req), ip = clientIp(req);
+    const locked = passwordLocked(ip);
+    if (locked) return json(res, 429, { error: locked });
+    if (!sameSecret(b.password, ADMIN_PASSWORD)) {
+      recordPasswordFail(ip);
+      return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
+    }
+    const m = db.prepare('SELECT phone, email FROM members WHERE id=?').get(Number(b.id));
+    if (!m) return json(res, 404, { error: 'not found' });
+    db.prepare('INSERT INTO pii_view_log (admin_id,member_id,ip) VALUES (?,?,?)').run(ADMIN_ID, Number(b.id), ip);
+    json(res, 200, { phone: m.phone, email: m.email || '' });
+  },
+  // 회원 가져오기(M-16): 현행 관리자에서 추출한 CSV. 이미 있는 번호·파일 안 중복은 건너뛴다
+  'POST /api/admin/members/import': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const rows = parseCsv(String((await readBody(req)).csv || ''));
+    const head = (rows.shift() || []).map((h) => h.trim().toLowerCase());
+    const col = (name) => head.indexOf(name);
+    if (col('name') < 0 || col('phone') < 0) return json(res, 400, { error: '첫 줄에 name, phone 열이 필요합니다.' });
+    const year = new Date().getFullYear();
+    const ins = db.prepare('INSERT INTO members (name,phone,email,gender,birth_year,joined_at,source) VALUES (?,?,?,?,?,?,?)');
+    const exists = db.prepare('SELECT 1 FROM members WHERE phone=?');
+    const report = { total: 0, imported: 0, duplicate: 0, errors: [] };
+    db.exec('BEGIN');
+    try {
+      rows.forEach((r, i) => {
+        if (r.every((c) => !c.trim())) return;
+        report.total++;
+        const get = (n) => (col(n) < 0 ? '' : (r[col(n)] || '').trim());
+        const name = get('name').slice(0, 20), phone = get('phone').replace(/\D/g, ''), email = get('email').slice(0, 100);
+        const by = birthYear(get('birth_year'), year);
+        const fail = (reason) => report.errors.push({ line: i + 2, reason, row: r });
+        if (!name) return fail('이름이 없습니다.');
+        if (!/^01\d{8,9}$/.test(phone)) return fail('연락처 형식이 올바르지 않습니다.');
+        if (email && !email.includes('@')) return fail('이메일 형식이 올바르지 않습니다.');
+        if (exists.get(phone)) return void report.duplicate++;
+        ins.run(name, phone, email || null, get('gender').slice(0, 10) || null, by, get('joined_at').slice(0, 19) || null, '이관');
+        report.imported++;
+      });
+      db.exec('COMMIT');
+    } catch (err) { db.exec('ROLLBACK'); throw err; }
+    json(res, 200, report);
   },
   // 이력 조회(M-11): 날짜·이름/연락처·레인 검색. format=csv이면 엑셀용 CSV로 내려준다
   'GET /api/admin/history': async (req, res) => {

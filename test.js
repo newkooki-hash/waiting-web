@@ -225,6 +225,46 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await assigned()).lanes, '3,9');
     assert.equal((await assigned()).assignedAt, at); // 배정 시각은 유지
     assert.equal((await call('POST', `/api/admin/entries/${first.id}/relane`, { lanes: '1' })).status, 409); // 대기 건은 불가
+    // --- 회원: 번호 인증 시 연결, CSV 가져오기, 마스킹, 원문 조회 ---
+    const members = async (q = '') => (await call('GET', `/api/admin/members${q}`)).body;
+    assert.equal((await fetch(base + '/api/admin/members')).status, 401);
+    const signup = (await members()).entries.find((m) => m.name === '홍길동'); // 번호 인증을 마친 가입자가 회원으로 추가됨
+    assert.ok(signup.linked && signup.source === '가입');
+    assert.equal(signup.phone, '010-****-2222');
+    assert.equal((await call('POST', '/api/admin/members/import', { csv: 'a,b\n1,2' })).status, 400); // 필수 열 없음
+    const memberCsv = [
+      '﻿uidx,name,phone,email,gender,birth_year,joined_at,last_login',
+      '1,김이관,010-2222-3333,kim@example.com,남,1980,2024-11-01 10:00:00,',
+      '2,"이,쉼표",01044445555,,여,,2025-01-02,', // 출생연도·이메일 공란 허용, 따옴표 안 쉼표
+      '3,중복파일,01022223333,,,,,', // 파일 안 중복
+      '4,기존번호,01011112222,,,,,', // 이미 있는 번호(가입자)
+      '5,번호오류,123,,,,,',
+      '6,메일오류,01066667777,nomail,,,,',
+      '7,글자연도,01088889999,,,2001.04.11,,',
+      '8,,01012341234,,,,,', // 이름 없음
+    ].join('\r\n');
+    const rep = (await call('POST', '/api/admin/members/import', { csv: memberCsv })).body;
+    assert.deepEqual([rep.total, rep.imported, rep.duplicate, rep.errors.length], [8, 3, 2, 3]);
+    assert.deepEqual(rep.errors.map((e) => e.line), [6, 7, 9]);
+    const again = (await call('POST', '/api/admin/members/import', { csv: memberCsv })).body; // 재업로드는 모두 건너뜀
+    assert.deepEqual([again.imported, again.duplicate], [0, 5]);
+    const found = (await members('?q=쉼표')).entries;
+    assert.equal(found.length, 1);
+    assert.equal(found[0].phone, '010-****-5555');
+    assert.equal(found[0].email, '');
+    assert.equal(found[0].age, null);
+    const kim = (await members('?q=2222-3333')).entries; // 검색은 원문 번호로도 되지만 숫자만 입력한 것과는 다르다
+    assert.equal(kim.length, 0);
+    const kim2 = (await members('?q=01022223333')).entries[0];
+    assert.equal(kim2.email, 'k**@example.com');
+    assert.equal(kim2.age, new Date().getFullYear() - 1980);
+    assert.equal((await members('?q=김이관')).total, 1);
+    assert.equal((await call('POST', '/api/admin/members/reveal', { id: kim2.id, password: 'wrong' })).status, 401);
+    const shown = await call('POST', '/api/admin/members/reveal', { id: kim2.id, password: 'pw' });
+    assert.equal(shown.status, 200);
+    assert.deepEqual(shown.body, { phone: '01022223333', email: 'kim@example.com' });
+    assert.equal((await call('POST', '/api/admin/members/reveal', { id: 99999, password: 'pw' })).status, 404);
+    assert.equal((await fetch(base + '/api/admin/members/reveal', { method: 'POST' })).status, 401);
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);
