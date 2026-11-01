@@ -375,6 +375,7 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await fetch(base + '/api/admin/calendar', { method: 'POST' })).status, 401);
     assert.equal((await fetch(base + '/api/admin/calendar')).status, 401);
     assert.equal((await cal({ date: '2026-02-30', title: '없는 날' })).status, 400);
+    assert.equal((await cal({ date: '2026-13-01', title: '없는 달' })).status, 400);
     assert.equal((await cal({ date: '2026-12-25', title: ' ' })).status, 400);
     const ev1 = (await cal({ date: '2026-12-25', title: '성탄 이벤트', memo: '전 레인 할인' })).body.id;
     await cal({ date: '2026-12-25', title: '챔프전 신청 마감' });
@@ -389,6 +390,48 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/calendar/remove', { id: ev1 })).status, 200);
     assert.equal((await call('POST', '/api/admin/calendar/remove', { id: ev1 })).status, 404);
     assert.equal((await (await fetch(base + '/api/calendar?month=bad')).json()).month, new Date().toLocaleDateString('sv').slice(0, 7)); // 잘못된 월은 이번 달
+    // --- 공지사항·이벤트 이미지 ---
+    const notice = (b) => call('POST', '/api/admin/notices', b);
+    assert.equal((await fetch(base + '/api/admin/notices', { method: 'POST' })).status, 401);
+    assert.equal((await notice({ title: ' ' })).status, 400);
+    assert.equal((await notice({ title: '제목', date: '2026-13-01' })).status, 400);
+    const n1 = (await notice({ title: '휴무 안내', body: '12/25 정상 영업', date: '2026-12-01' })).body.id;
+    await notice({ title: '신규 이벤트', date: '2026-12-10' });
+    const pub = (await (await fetch(base + '/api/notices')).json()).notices; // 손님은 로그인 없이 조회, 최신 날짜가 위
+    assert.deepEqual(pub.map((n) => n.title), ['신규 이벤트', '휴무 안내']);
+    assert.equal(pub[1].body, '12/25 정상 영업');
+    assert.equal((await notice({ id: n1, title: '휴무 안내(수정)', date: '2026-12-01' })).status, 200);
+    assert.equal((await call('GET', '/api/admin/notices')).body.notices.find((n) => n.id === n1).title, '휴무 안내(수정)');
+    assert.equal((await notice({ id: 99999, title: 'x' })).status, 404);
+    assert.equal((await call('POST', '/api/admin/notices/remove', { id: n1 })).status, 200);
+    assert.equal((await call('POST', '/api/admin/notices/remove', { id: n1 })).status, 404);
+    assert.equal((await notice({ title: 'x'.repeat(20), body: 'y'.repeat(1100000) })).status, 400); // 1MB 넘는 요청은 받지 않는다
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+    const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32, 2)]);
+    const up = (buf) => call('POST', '/api/admin/banners', { data: 'data:image/png;base64,' + buf.toString('base64') });
+    assert.equal((await fetch(base + '/api/admin/banners', { method: 'POST' })).status, 401);
+    assert.equal((await call('POST', '/api/admin/banners', {})).status, 400);
+    assert.equal((await up(Buffer.from('<script>alert(1)</script>'))).status, 400); // 이미지가 아니면 거절
+    assert.equal((await up(Buffer.alloc(3 * 1024 * 1024 + 1, 0xff))).status, 413);
+    const b1 = (await up(png)).body.id, b2 = (await up(jpg)).body.id;
+    const ids = async () => (await (await fetch(base + '/api/banners')).json()).banners.map((b) => b.id);
+    assert.deepEqual(await ids(), [b1, b2]);
+    const img = await fetch(`${base}/banner/${b2}`);
+    assert.deepEqual([img.status, img.headers.get('content-type'), img.headers.get('x-content-type-options')], [200, 'image/jpeg', 'nosniff']);
+    assert.deepEqual(Buffer.from(await img.arrayBuffer()), jpg);
+    assert.equal((await fetch(`${base}/banner/99999`)).status, 404);
+    assert.equal((await fetch(`${base}/api/admin/banner-image?id=${b1}`)).status, 401);
+    assert.equal((await fetch(`${base}/api/admin/banner-image?id=${b1}`, { headers: { cookie: `admin=${jar.admin}` } })).headers.get('content-type'), 'image/png');
+    assert.equal((await call('POST', '/api/admin/banners/move', { id: b2, dir: 'up' })).status, 200);
+    assert.deepEqual(await ids(), [b2, b1]);
+    await call('POST', '/api/admin/banners/move', { id: b2, dir: 'up' }); // 맨 위에서는 변화 없음
+    assert.deepEqual(await ids(), [b2, b1]);
+    await call('POST', '/api/admin/banners/move', { id: b2, dir: 'down' });
+    assert.deepEqual(await ids(), [b1, b2]);
+    assert.equal((await call('POST', '/api/admin/banners/move', { id: 99999, dir: 'up' })).status, 404);
+    assert.equal((await call('POST', '/api/admin/banners/remove', { id: b1 })).status, 200);
+    assert.deepEqual(await ids(), [b2]);
+    assert.equal((await call('POST', '/api/admin/banners/remove', { id: b1 })).status, 404);
     // 로그아웃하면 세션이 무효가 된다
     const sess = jar.admin;
     assert.equal((await call('POST', '/api/admin/logout')).status, 200);

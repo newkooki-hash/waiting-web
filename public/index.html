@@ -34,6 +34,7 @@
 <body>
 <main>
   <h1>오란다 볼링 대기 접수</h1>
+  <div id="banners" style="display:grid;gap:8px;margin-bottom:16px"></div>
 
   <section id="notice" class="card center" hidden>
     <p id="noticeText" style="margin:0"></p>
@@ -72,7 +73,7 @@
     <div id="err" class="err" role="alert"></div>
   </form>
 
-  <p class="center muted" style="margin-top:20px"><a href="/tournament" style="color:inherit">정기 대회 신청 →</a> · <a href="/calendar" style="color:inherit">행사 일정 →</a></p>
+  <p class="center muted" style="margin-top:20px"><a href="/tournament" style="color:inherit">정기 대회 신청 →</a> · <a href="/calendar" style="color:inherit">행사 일정 →</a> · <a href="/notice" style="color:inherit">공지사항 →</a></p>
 
   <section id="status" class="card" hidden>
     <div class="center muted" id="who"></div>
@@ -216,6 +217,10 @@ $('logout').onclick = async (ev) => {
   history.replaceState(null, '', '/');
   showForm();
 };
+
+fetch('/api/banners').then((r) => r.json()).then(({ banners }) => {
+  $('banners').innerHTML = banners.map((b) => `<img src="/banner/${b.id}" alt="이벤트" loading="lazy" style="width:100%;border-radius:12px;display:block">`).join('');
+});
 
 const es = new EventSource('/api/events');
 es.onmessage = refresh;

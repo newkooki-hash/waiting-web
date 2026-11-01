@@ -142,6 +142,7 @@
         <a href="#history" data-view="history">이력 조회</a>
         <a href="#tournaments" data-view="tournaments">대회 신청</a>
         <a href="#calendar" data-view="calendar">행사 일정</a>
+        <a href="#notices" data-view="notices">공지·이미지</a>
         <a href="#members" data-view="members">회원관리</a>
         <a href="#blacklist" data-view="blacklist">블랙리스트</a>
         <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
@@ -258,6 +259,36 @@
       </div>
     </section>
 
+    <section id="v-notices" hidden>
+      <h2>공지·이벤트 이미지</h2>
+      <p class="sub">공지사항은 손님 화면의 `공지사항`에, 이벤트 이미지는 대기 접수 화면 맨 위에 표시됩니다.</p>
+      <div class="panel">
+        <h3>공지사항</h3>
+        <form id="nForm" class="field" style="align-items:flex-start;margin-bottom:12px">
+          <input type="date" id="nDate" aria-label="날짜" required>
+          <input type="text" id="nTitle" placeholder="제목" maxlength="100" required style="width:240px">
+          <textarea id="nBody" rows="4" placeholder="내용" maxlength="5000" style="flex:1;min-width:240px;font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
+          <button class="primary" id="nSave">등록</button>
+          <button type="button" id="nCancel" hidden>수정 취소</button>
+        </form>
+        <div id="nMsg" class="err" role="alert"></div>
+        <div class="wrap"><table>
+          <thead><tr><th>날짜</th><th>제목</th><th></th></tr></thead>
+          <tbody id="nRows"></tbody>
+        </table></div>
+      </div>
+      <div class="panel">
+        <h3>이벤트 이미지</h3>
+        <div class="field">
+          <input type="file" id="bFile" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="이미지 파일">
+          <button class="primary" id="bUpload">올리기</button>
+          <span class="hint" style="margin:0">PNG·JPG·GIF·WEBP, 3MB 이하, 최대 30개. 위에서부터 순서대로 보입니다.</span>
+        </div>
+        <div id="bMsg" class="err" role="alert"></div>
+        <div id="bList" style="display:grid;gap:10px"></div>
+      </div>
+    </section>
+
     <section id="v-members" hidden>
       <h2>회원관리</h2>
       <p class="sub">연락처와 이메일은 일부만 표시됩니다. 원문은 비밀번호를 다시 입력해야 볼 수 있고, 조회 기록이 남습니다.</p>
@@ -358,7 +389,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'tournaments', 'calendar', 'members', 'blacklist', 'intake'];
+const VIEWS = ['queue', 'done', 'history', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -376,7 +407,66 @@ function route() {
   if (v === 'members') loadMembers();
   if (v === 'tournaments') loadTournaments();
   if (v === 'calendar') loadCalendar();
+  if (v === 'notices') loadNotices();
 }
+
+// 공지사항·이벤트 이미지
+let nList = [], nEditId = null;
+function resetNForm() { nEditId = null; $('nForm').reset(); $('nDate').value = today(); $('nSave').textContent = '등록'; $('nCancel').hidden = true; }
+async function loadNotices() {
+  if (!$('nDate').value) $('nDate').value = today();
+  const [n, b] = await Promise.all([fetch('/api/admin/notices'), fetch('/api/admin/banners')]);
+  if (!n.ok || !b.ok) return;
+  nList = (await n.json()).notices;
+  $('nRows').innerHTML = nList.length ? nList.map((x) => `
+    <tr data-id="${x.id}"><td>${esc(x.date)}</td><td><strong>${esc(x.title)}</strong>${x.body ? `<div class="meta">${esc(x.body.slice(0, 80))}${x.body.length > 80 ? '…' : ''}</div>` : ''}</td>
+    <td class="actions"><button data-n="edit">수정</button><button class="danger" data-n="remove">삭제</button></td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty" style="border:0">등록된 공지사항이 없습니다.</td></tr>';
+  const banners = (await b.json()).banners;
+  $('bList').innerHTML = banners.length ? banners.map((x, i) => `
+    <div class="field" data-id="${x.id}" style="padding:8px;border:1px solid var(--line);border-radius:8px">
+      <img src="/api/admin/banner-image?id=${x.id}" alt="이벤트 이미지 ${i + 1}" style="width:160px;max-height:90px;object-fit:cover;border-radius:6px">
+      <span style="flex:1">#${i + 1}</span>
+      <button data-b="up"${i === 0 ? ' disabled' : ''}>위로</button><button data-b="down"${i === banners.length - 1 ? ' disabled' : ''}>아래로</button><button class="danger" data-b="remove">삭제</button>
+    </div>`).join('') : '<div class="meta">등록된 이미지가 없습니다.</div>';
+}
+$('nCancel').onclick = resetNForm;
+$('nForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('nMsg').textContent = '';
+  const r = await post('/api/admin/notices', { id: nEditId, date: $('nDate').value, title: $('nTitle').value, body: $('nBody').value });
+  if (!r.ok) return ($('nMsg').textContent = r.body.error || '저장에 실패했습니다.');
+  resetNForm(); loadNotices();
+});
+$('nRows').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-n]');
+  if (!btn) return;
+  const n = nList.find((x) => x.id === Number(btn.closest('tr').dataset.id));
+  if (btn.dataset.n === 'edit') {
+    nEditId = n.id; $('nDate').value = n.date; $('nTitle').value = n.title; $('nBody').value = n.body;
+    $('nSave').textContent = '수정 저장'; $('nCancel').hidden = false; $('nTitle').focus();
+  } else if (confirm(`'${n.title}' 공지를 삭제할까요?`)) { await post('/api/admin/notices/remove', { id: n.id }); loadNotices(); }
+});
+$('bUpload').onclick = async () => {
+  $('bMsg').textContent = '';
+  const f = $('bFile').files[0];
+  if (!f) return ($('bMsg').textContent = '이미지를 선택하세요.');
+  if (f.size > 3 * 1024 * 1024) return ($('bMsg').textContent = '이미지가 너무 큽니다. 3MB 이하로 올려 주세요.');
+  const data = await new Promise((resolve) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.readAsDataURL(f); });
+  $('bUpload').disabled = true;
+  const r = await post('/api/admin/banners', { data });
+  $('bUpload').disabled = false;
+  if (!r.ok) return ($('bMsg').textContent = r.body.error || '올리기에 실패했습니다.');
+  $('bFile').value = ''; loadNotices();
+};
+$('bList').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-b]');
+  if (!btn) return;
+  const id = Number(btn.closest('[data-id]').dataset.id);
+  if (btn.dataset.b === 'remove') { if (!confirm('이미지를 삭제할까요?')) return; await post('/api/admin/banners/remove', { id }); }
+  else await post('/api/admin/banners/move', { id, dir: btn.dataset.b });
+  loadNotices();
+});
 
 // 행사 캘린더
 let cMonth = new Date().toLocaleDateString('sv').slice(0, 7), cDay = '', cEvents = [], cEditId = null;

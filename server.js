@@ -248,11 +248,12 @@ const json = (res, code, body) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
 };
-const readBody = (req) =>
+const readBody = (req, max = 1024 * 1024) =>
   new Promise((resolve) => {
-    let data = '';
-    req.on('data', (c) => (data += c));
+    let data = '', big = false;
+    req.on('data', (c) => { if (!big && (data += c).length > max) { big = true; data = ''; } });
     req.on('end', () => {
+      if (big) return resolve({ _tooLarge: true });
       try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); }
     });
   });
@@ -488,6 +489,76 @@ const api = {
     db.prepare('DELETE FROM blacklist WHERE id=?').run(Number((await readBody(req)).id));
     json(res, 200, { ok: true });
   },
+  'GET /api/notices': async (req, res) => json(res, 200, { notices: noticeRows() }),
+  'GET /api/banners': async (req, res) => json(res, 200, { banners: bannerIds() }),
+  'GET /api/admin/notices': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    json(res, 200, { notices: noticeRows() });
+  },
+  'POST /api/admin/notices': async (req, res) => { // 등록·수정(id가 있으면 수정)
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const date = String(b.date || new Date().toLocaleDateString('sv')), title = String(b.title || '').trim().slice(0, 100), body = String(b.body || '').trim().slice(0, 5000);
+    if (!dateOk(date)) return json(res, 400, { error: '날짜를 확인하세요.' });
+    if (!title) return json(res, 400, { error: '제목을 입력하세요.' });
+    const id = Number(b.id);
+    if (id) {
+      if (!db.prepare('UPDATE notices SET date=?, title=?, body=? WHERE id=?').run(date, title, body || null, id).changes) return json(res, 404, { error: 'not found' });
+      return json(res, 200, { id });
+    }
+    json(res, 201, { id: Number(db.prepare('INSERT INTO notices (date,title,body) VALUES (?,?,?)').run(date, title, body || null).lastInsertRowid) });
+  },
+  'POST /api/admin/notices/remove': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const r = db.prepare('DELETE FROM notices WHERE id=?').run(Number((await readBody(req)).id));
+    json(res, r.changes ? 200 : 404, r.changes ? { ok: true } : { error: 'not found' });
+  },
+  'GET /api/admin/banners': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    json(res, 200, { banners: bannerIds() });
+  },
+  'GET /api/admin/banner-image': async (req, res) => { // 관리자 호스트는 /banner/를 쓸 수 없어 미리보기를 따로 둔다
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = db.prepare('SELECT mime, data FROM banners WHERE id=?').get(Number(new URL(req.url, 'http://x').searchParams.get('id')));
+    if (!b) return json(res, 404, { error: 'not found' });
+    res.writeHead(200, { 'Content-Type': b.mime, 'X-Content-Type-Options': 'nosniff' });
+    res.end(b.data);
+  },
+  'POST /api/admin/banners': async (req, res) => { // 이미지 업로드: { data: base64 또는 data URL }
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const body = await readBody(req, 8 * 1024 * 1024);
+    if (body._tooLarge) return json(res, 413, { error: '이미지가 너무 큽니다. 3MB 이하로 올려 주세요.' });
+    const img = Buffer.from(String(body.data || '').replace(/^data:[^,]*,/, ''), 'base64');
+    if (!img.length) return json(res, 400, { error: '이미지를 선택하세요.' });
+    if (img.length > MAX_IMAGE) return json(res, 413, { error: '이미지가 너무 큽니다. 3MB 이하로 올려 주세요.' });
+    const mime = imageMime(img);
+    if (!mime) return json(res, 400, { error: 'PNG, JPG, GIF, WEBP 이미지만 올릴 수 있습니다.' });
+    if (db.prepare('SELECT COUNT(*) n FROM banners').get().n >= MAX_BANNERS) return json(res, 409, { error: `이미지는 최대 ${MAX_BANNERS}개까지 등록할 수 있습니다.` });
+    const id = Number(db.prepare('INSERT INTO banners (mime,data,sort) VALUES (?,?,(SELECT COALESCE(MAX(sort),0)+1 FROM banners))').run(mime, img).lastInsertRowid);
+    json(res, 201, { id });
+  },
+  'POST /api/admin/banners/move': async (req, res) => { // 위로/아래로: 이웃과 순서를 바꾼다
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const me = db.prepare('SELECT id, sort FROM banners WHERE id=?').get(Number(b.id));
+    if (!me) return json(res, 404, { error: 'not found' });
+    const other = b.dir === 'up'
+      ? db.prepare('SELECT id, sort FROM banners WHERE (sort < ? OR (sort = ? AND id < ?)) ORDER BY sort DESC, id DESC LIMIT 1').get(me.sort, me.sort, me.id)
+      : db.prepare('SELECT id, sort FROM banners WHERE (sort > ? OR (sort = ? AND id > ?)) ORDER BY sort, id LIMIT 1').get(me.sort, me.sort, me.id);
+    if (other) {
+      // 같은 sort 값이 겹쳐도 바뀌도록 id 순서를 기준으로 번호를 다시 매긴다
+      const all = db.prepare('SELECT id FROM banners ORDER BY sort, id').all().map((r) => r.id);
+      const i = all.indexOf(me.id), j = all.indexOf(other.id);
+      [all[i], all[j]] = [all[j], all[i]];
+      all.forEach((id, k) => db.prepare('UPDATE banners SET sort=? WHERE id=?').run(k + 1, id));
+    }
+    json(res, 200, { ok: true });
+  },
+  'POST /api/admin/banners/remove': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const r = db.prepare('DELETE FROM banners WHERE id=?').run(Number((await readBody(req)).id));
+    json(res, r.changes ? 200 : 404, r.changes ? { ok: true } : { error: 'not found' });
+  },
   'GET /api/calendar': async (req, res) => {
     const month = monthOf(new URL(req.url, 'http://x').searchParams.get('month'));
     json(res, 200, { month, events: calendarRows(month) });
@@ -598,7 +669,9 @@ const api = {
   // 회원 가져오기(M-16): 현행 관리자에서 추출한 CSV. 이미 있는 번호·파일 안 중복은 건너뛴다
   'POST /api/admin/members/import': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    const rows = parseCsv(String((await readBody(req)).csv || ''));
+    const body = await readBody(req, 10 * 1024 * 1024); // 회원 CSV는 1MB를 넘을 수 있다
+    if (body._tooLarge) return json(res, 413, { error: '파일이 너무 큽니다. 10MB 이하로 나누어 올려 주세요.' });
+    const rows = parseCsv(String(body.csv || ''));
     const head = (rows.shift() || []).map((h) => h.trim().toLowerCase());
     const col = (name) => head.indexOf(name);
     if (col('name') < 0 || col('phone') < 0) return json(res, 400, { error: '첫 줄에 name, phone 열이 필요합니다.' });
@@ -727,6 +800,32 @@ async function handleAction(req, res, id, action) {
   json(res, 200, { ok: true });
 }
 
+// ---- 공지사항·이벤트 이미지 (M-25). 전체 푸시는 알림톡 보류로 제외 ----
+db.exec(`CREATE TABLE IF NOT EXISTS notices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS banners (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mime TEXT NOT NULL,
+  data BLOB NOT NULL,
+  sort INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+const MAX_BANNERS = 30, MAX_IMAGE = 3 * 1024 * 1024;
+const imageMime = (b) => { // 파일 앞부분으로 형식 판별(올린 파일 이름·형식 표시는 믿지 않는다)
+  if (b.length > 12 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG') return 'image/png';
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length > 6 && b.toString('latin1', 0, 4) === 'GIF8') return 'image/gif';
+  if (b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+};
+const noticeRows = () => db.prepare('SELECT id, date, title, body FROM notices ORDER BY date DESC, id DESC LIMIT 200').all().map((n) => ({ id: n.id, date: n.date, title: n.title, body: n.body || '' }));
+const bannerIds = () => db.prepare('SELECT id FROM banners ORDER BY sort, id').all().map((b) => ({ id: b.id }));
+
 // ---- 행사·일정 캘린더 (M-17): 관리자가 등록하고 손님은 조회만 한다 ----
 db.exec(`CREATE TABLE IF NOT EXISTS calendar_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -735,7 +834,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS calendar_events (
   memo TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )`);
-const dateOk = (v) => /^\d{4}-\d\d-\d\d$/.test(v) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
+const dateOk = (v) => {
+  if (!/^\d{4}-\d\d-\d\d$/.test(v)) return false;
+  const d = new Date(v + 'T00:00:00Z');
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v; // 2026-13-01·2026-02-30 같은 값 거절
+};
 const monthOf = (q) => (/^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : new Date().toLocaleDateString('sv').slice(0, 7));
 const calendarRows = (month) => db.prepare('SELECT id, date, title, memo FROM calendar_events WHERE substr(date,1,7)=? ORDER BY date, id').all(month)
   .map((e) => ({ id: e.id, date: e.date, title: e.title, memo: e.memo || '' }));
@@ -969,6 +1072,12 @@ const server = http.createServer(async (req, res) => {
       const back = cookie(req, 'login_next') === 'tournament' ? '/tournament' : '/';
       return redirect(res, back, [clear, `login_next=; Path=/; Max-Age=0${SECURE}`, `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7776000${SECURE}`]);
     }
+    if (req.method === 'GET' && (m = url.pathname.match(/^\/banner\/(\d+)$/))) {
+      const b = db.prepare('SELECT mime, data FROM banners WHERE id=?').get(Number(m[1]));
+      if (!b) return json(res, 404, { error: 'not found' });
+      res.writeHead(200, { 'Content-Type': b.mime, 'Cache-Control': 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(b.data);
+    }
     if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/entries\/([0-9a-f]+)$/))) {
       const e = db.prepare('SELECT * FROM entries WHERE token=?').get(m[1]);
       return e ? json(res, 200, publicView(e)) : json(res, 404, { error: 'not found' });
@@ -987,7 +1096,7 @@ const server = http.createServer(async (req, res) => {
       return await handleAction(req, res, Number(m[1]), m[2]);
 
     if (req.method === 'GET') {
-      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html' }[url.pathname];
+      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html', '/notice': 'notice.html' }[url.pathname];
       const file = page || url.pathname.slice(1);
       const full = path.join(PUBLIC, file);
       if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {

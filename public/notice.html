@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오란다 볼링 공지사항</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --accent:#d9480f; --line:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1e2127; --text:#eceef1; --muted:#9aa1ad; --accent:#ff7a3d; --line:#2e333b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,"Malgun Gothic",sans-serif; }
+  main { max-width:420px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:1.3rem; margin:0 0 16px; }
+  details { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:10px; }
+  summary { cursor:pointer; list-style:none; }
+  summary::-webkit-details-marker { display:none; }
+  .date { color:var(--muted); font-size:.85rem; }
+  .title { font-weight:700; }
+  .body { white-space:pre-wrap; margin-top:10px; padding-top:10px; border-top:1px solid var(--line); }
+  .muted { color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>공지사항</h1>
+  <p class="muted"><a href="/" style="color:inherit">← 대기 접수</a></p>
+  <div id="list"></div>
+</main>
+
+<script>
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+(async () => {
+  const { notices } = await (await fetch('/api/notices')).json();
+  document.getElementById('list').innerHTML = notices.length ? notices.map((n) => `
+    <details><summary><div class="date">${esc(n.date)}</div><div class="title">${esc(n.title)}</div></summary>
+    ${n.body ? `<div class="body">${esc(n.body)}</div>` : '<div class="body muted">내용이 없습니다.</div>'}</details>`).join('')
+    : '<div class="muted">등록된 공지사항이 없습니다.</div>';
+})();
+</script>
+</body>
+</html>
