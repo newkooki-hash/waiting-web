@@ -81,6 +81,22 @@
   .badge.CALLED { background:var(--call-soft); color:var(--call); }
   .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
   .actions input { width:110px; }
+  .qhead, .qline { display:grid; grid-template-columns:64px minmax(120px,1.4fr) 72px minmax(130px,1.2fr) 70px minmax(110px,1fr); gap:12px; align-items:center; }
+  .qhead { padding:0 22px 6px; font-size:.8rem; color:var(--muted); font-weight:600; }
+  .q { background:var(--card); border:1px solid var(--line); border-left:6px solid var(--line); border-radius:var(--radius); }
+  .q.CALLED { border-left-color:var(--call); background:linear-gradient(90deg,var(--call-soft),var(--card) 40%); }
+  .q.WAITING { border-left-color:var(--accent); }
+  .q.sel { box-shadow:0 0 0 2px var(--accent); }
+  .qline { padding:12px 16px; cursor:pointer; }
+  .qline .no { font-size:1.5rem; font-weight:800; text-align:center; }
+  .qline .nm { font-weight:700; font-size:1.05rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .qline .memo { display:block; font-weight:400; font-size:.8rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; }
+  .qline .badge { margin-left:0; }
+  .qact { padding:10px 16px 14px; border-top:1px dashed var(--line); justify-content:flex-start; }
+  .fold { margin-top:16px; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:0 16px; }
+  .fold > summary { cursor:pointer; padding:14px 0; font-weight:700; font-size:1.05rem; }
+  .fold[open] > summary { border-bottom:1px solid var(--line); margin-bottom:12px; }
+  .fold .wrap { margin-bottom:16px; }
   .empty { padding:40px 16px; text-align:center; color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:var(--radius); }
 
   /* 행사 캘린더 */
@@ -157,7 +173,7 @@
 <div id="app" hidden>
   <header>
     <div class="bar">
-      <span class="brand">오란다 볼링</span>
+      <span class="brand">오란다 볼링파크</span>
       <nav aria-label="관리 메뉴">
         <div class="menu"><a href="#queue" class="top" data-view="queue">대기 관리</a></div>
         <div class="menu"><a href="#tournaments" class="top" data-view="tournaments">대회 관리</a></div>
@@ -182,8 +198,21 @@
   <main>
     <section id="v-queue" hidden>
       <h2>대기 현황 <small id="cntWait" class="sub">0팀 대기(총 0명)</small></h2>
-      <p class="sub">호출하거나 레인을 입력해 배정합니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
-      <form id="manual" class="panel field" style="margin-bottom:12px">
+      <p class="sub">대기자를 누르면 호출·배정·양보 등 메뉴가 열립니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
+      <div class="qhead" aria-hidden="true"><span>순번</span><span>이름</span><span>인원</span><span>연락처</span><span>접수</span><span>상태</span></div>
+      <div id="rows" class="list"></div>
+      <div id="msg" class="err" role="alert"></div>
+
+      <details id="doneBox" class="fold">
+        <summary>배정 완료 <small id="cntDone" class="sub">0팀</small></summary>
+        <p class="sub">오늘 레인을 배정한 팀입니다. 최근 배정이 위에 표시됩니다.</p>
+        <div class="wrap"><table>
+          <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정 시각</th><th></th></tr></thead>
+          <tbody id="done"></tbody>
+        </table></div>
+      </details>
+
+      <form id="manual" class="panel field" style="margin-top:12px">
         <strong>수기 등록</strong>
         <input type="text" id="mName" placeholder="이름" maxlength="20" required style="width:120px">
         <input type="text" id="mPhone" placeholder="전화 (선택)" inputmode="numeric" style="width:150px">
@@ -191,17 +220,6 @@
         <input type="text" id="mMemo" placeholder="메모 (선택)" maxlength="200" style="width:180px">
         <button class="primary">등록</button>
       </form>
-      <div id="rows" class="list"></div>
-      <div id="msg" class="err" role="alert"></div>
-    </section>
-
-    <section id="v-done" hidden style="margin-top:28px">
-      <h2>배정 완료 <small id="cntDone" class="sub">0팀</small></h2>
-      <p class="sub">오늘 레인을 배정한 팀입니다. 최근 배정이 위에 표시됩니다.</p>
-      <div class="wrap"><table>
-        <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정 시각</th><th></th></tr></thead>
-        <tbody id="done"></tbody>
-      </table></div>
     </section>
 
     <section id="v-history" hidden>
@@ -451,7 +469,7 @@ const $ = (id) => document.getElementById(id);
 const LABEL = { WAITING: '대기', CALLED: '호출됨' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소' };
-const VIEWS = ['queue', 'done', 'history', 'stats', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'intake'];
+const VIEWS = ['queue', 'history', 'stats', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'intake'];
 let es, intake;
 
 async function post(url, body) {
@@ -462,8 +480,8 @@ async function post(url, body) {
 
 function route() {
   const h = location.hash.slice(1);
-  const v = VIEWS.includes(h) && h !== 'done' ? h : 'queue';
-  for (const n of VIEWS) $('v-' + n).hidden = n !== v && !(v === 'queue' && n === 'done');
+  const v = VIEWS.includes(h) ? h : 'queue'; // 옛 #done 주소는 대기 관리로 연결된다
+  for (const n of VIEWS) $('v-' + n).hidden = n !== v;
   document.querySelectorAll('.drop a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   document.querySelectorAll('.menu').forEach((m) => m.setAttribute('aria-current', String(!!m.querySelector(`a[data-view="${v}"]`))));
   if (v === 'history') loadHistory();
@@ -953,17 +971,23 @@ async function load() {
 
   const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
-  $('cntWait').textContent = `${waitingList.length}팀 대기(총 ${waitingList.reduce((s, e) => s + e.partySize, 0)}명)`; $('cntDone').textContent = done.length;
+  $('cntWait').textContent = `${waitingList.length}팀 대기(총 ${waitingList.reduce((s, e) => s + e.partySize, 0)}명)`; $('cntDone').textContent = `${done.length}팀`;
 
+  if (!waitingList.some((e) => e.id === selectedId)) selectedId = null;
+  const laneDraft = $('rows').querySelector('.qact input')?.value; // 화면이 갱신돼도 입력 중이던 레인을 유지한다
   $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
-    <div class="row ${e.status}" data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
-      <div class="pos">${i + 1}<small>순번</small></div>
-      <div>
-        <div class="who">${esc(e.name)} · ${e.partySize}명<span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span>${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</div>
-        <div class="meta"><span>${esc(e.phone)}</span><span>${esc(e.createdAt.slice(11, 16))} 접수</span>${e.memo ? `<span>메모: ${esc(e.memo)}</span>` : ''}</div>
+    <div class="q ${e.status}${e.id === selectedId ? ' sel' : ''}" data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
+      <div class="qline" tabindex="0" role="button" aria-expanded="${e.id === selectedId}">
+        <div class="no">${i + 1}</div>
+        <div class="nm">${esc(e.name)}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}${e.memo ? `<span class="memo">${esc(e.memo)}</span>` : ''}</div>
+        <div>${e.partySize}명</div>
+        <div>${esc(e.phone)}</div>
+        <div>${esc(e.createdAt.slice(11, 16))}</div>
+        <div><span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span></div>
       </div>
-      <div class="actions">${actions(e)}</div>
+      ${e.id === selectedId ? `<div class="actions qact">${actions(e)}</div>` : ''}
     </div>`).join('') : '<div class="empty">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
+  if (laneDraft) $('rows').querySelector('.qact input').value = laneDraft;
 
   $('done').innerHTML = done.length ? done.map((e) => `
     <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}" data-lanes="${esc(e.lanes)}">
@@ -984,6 +1008,17 @@ function actions(e) {
     <button class="primary" data-act="assign">배정</button>
     <button class="danger" data-act="cancel">취소</button>`;
 }
+
+let selectedId = null;
+function selectRow(line) {
+  const id = Number(line.closest('[data-id]').dataset.id);
+  selectedId = selectedId === id ? null : id;
+  load();
+}
+$('rows').addEventListener('click', (ev) => { const line = ev.target.closest('.qline'); if (line) selectRow(line); });
+$('rows').addEventListener('keydown', (ev) => {
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.classList.contains('qline')) { ev.preventDefault(); selectRow(ev.target); }
+});
 
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button[data-act]');
