@@ -50,6 +50,8 @@
   .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
   .dot.on { background:#51cf66; }
   .dot.off { background:#ffa94d; }
+  .dot.blink { animation:blink 1s steps(2, start) infinite; }
+  @keyframes blink { to { visibility:hidden; } }
 
   main { max-width:1100px; margin:0 auto; padding:20px 16px 48px; }
   h2 { font-size:1.25rem; margin:0 0 4px; letter-spacing:-.01em; }
@@ -160,6 +162,7 @@
         <div class="menu"><a href="#queue" class="top" data-view="queue">대기 관리</a></div>
         <div class="menu"><a href="#tournaments" class="top" data-view="tournaments">대회 관리</a></div>
         <div class="menu"><a href="#intake" class="top" data-view="intake">QR 관리 <span class="dot navDot"></span></a></div>
+        <div class="menu"><a id="sound" class="top" role="button" tabindex="0" style="cursor:pointer">알림음 <span class="dot" id="soundDot"></span></a></div>
         <div class="menu">
           <a href="#history" class="top">설정 ▾</a>
           <div class="drop">
@@ -172,8 +175,7 @@
           </div>
         </div>
       </nav>
-      <button id="sound" style="margin-left:auto" title="새 대기가 등록되면 소리로 알립니다">🔕 알림음 꺼짐</button>
-      <button id="logout">로그아웃</button>
+      <button id="logout" style="margin-left:auto">로그아웃</button>
     </div>
   </header>
 
@@ -885,7 +887,12 @@ window.addEventListener('hashchange', route);
 
 // 새 대기 알림음: 브라우저는 사용자가 한 번 누르기 전에는 소리를 낼 수 없어, 켜기 버튼을 누르거나 화면을 처음 누를 때 오디오를 준비한다
 let soundOn = localStorage.getItem('alertSound') === '1', audio;
-function drawSound() { $('sound').textContent = soundOn ? '🔔 알림음 켜짐' : '🔕 알림음 꺼짐'; }
+// 불빛: 초록 = 소리 나는 상태, 주황 깜빡임 = 켰지만 브라우저가 막은 상태(화면을 한 번 클릭), 빨강 = 꺼짐
+function drawSound() {
+  const running = audio && audio.state === 'running';
+  $('soundDot').className = 'dot ' + (!soundOn ? '' : running ? 'on' : 'off blink');
+  $('sound').title = !soundOn ? '알림음 꺼짐 (눌러서 켜기)' : running ? '알림음 켜짐' : '알림음을 켰지만 소리가 막혀 있습니다. 화면을 한 번 클릭하세요';
+}
 function beep() {
   if (!soundOn || !audio || audio.state !== 'running') return;
   [880, 1175].forEach((hz, i) => {
@@ -895,14 +902,21 @@ function beep() {
     o.start(t); o.stop(t + 0.17);
   });
 }
-function prepareAudio() { audio = audio || new AudioContext(); return audio.resume(); }
-$('sound').onclick = async () => {
+function prepareAudio() {
+  if (!audio) { audio = new AudioContext(); audio.onstatechange = drawSound; }
+  return audio.resume().then(drawSound);
+}
+async function toggleSound() {
   soundOn = !soundOn;
   localStorage.setItem('alertSound', soundOn ? '1' : '0');
   drawSound();
   if (soundOn) { await prepareAudio(); beep(); }
-};
+}
+$('sound').onclick = toggleSound;
+$('sound').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSound(); } };
 document.addEventListener('click', () => { if (soundOn) prepareAudio(); });
+// 켜 둔 상태로 열면 오디오를 미리 만들어, 브라우저가 허용하는 환경(자동 재생 허용)에서는 클릭 없이 바로 초록이 된다
+if (soundOn) { audio = new AudioContext(); audio.onstatechange = drawSound; }
 drawSound();
 // 하위 메뉴를 고르면 드롭다운을 닫고, 마우스가 메뉴를 벗어나면 다시 열 수 있게 한다
 document.querySelectorAll('.menu').forEach((m) => {
