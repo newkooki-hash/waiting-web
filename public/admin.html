@@ -34,6 +34,16 @@
   nav a { display:flex; align-items:center; gap:8px; padding:0 16px; color:var(--ink-muted); text-decoration:none; font-weight:600; white-space:nowrap; border-bottom:3px solid transparent; }
   nav a:hover { color:var(--ink-text); }
   nav a[aria-current="page"] { color:#fff; border-bottom-color:var(--accent); }
+  nav { overflow:visible; }
+  .menu { position:relative; display:flex; }
+  .menu .top { display:flex; align-items:center; gap:8px; padding:0 20px; color:var(--ink-muted); text-decoration:none; font-weight:600; border-bottom:3px solid transparent; }
+  .menu:hover .top, .menu:focus-within .top { color:var(--ink-text); }
+  .menu[aria-current="true"] .top { color:#fff; border-bottom-color:var(--accent); }
+  .drop { display:none; position:absolute; top:100%; left:0; min-width:190px; padding:6px; background:var(--ink); border-radius:0 0 8px 8px; box-shadow:0 8px 20px rgba(0,0,0,.3); flex-direction:column; }
+  .menu:hover .drop, .menu:focus-within .drop { display:flex; }
+  .drop a { padding:10px 12px; border-radius:6px; border-bottom:0; justify-content:space-between; }
+  .drop a:hover { background:rgba(255,255,255,.1); }
+  .drop a[aria-current="page"] { background:rgba(255,255,255,.14); }
   .pill { min-width:24px; padding:1px 8px; border-radius:99px; background:rgba(255,255,255,.14); font-size:.8rem; text-align:center; }
   nav a[aria-current="page"] .pill { background:var(--accent); color:var(--accent-ink); }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
@@ -146,16 +156,26 @@
     <div class="bar">
       <span class="brand">오란다 볼링</span>
       <nav aria-label="관리 메뉴">
-        <a href="#queue" data-view="queue">대기 목록 <span class="pill" id="cntWait">0</span></a>
-        <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
-        <a href="#history" data-view="history">이력 조회</a>
-        <a href="#stats" data-view="stats">통계</a>
-        <a href="#tournaments" data-view="tournaments">대회 신청</a>
-        <a href="#calendar" data-view="calendar">행사 일정</a>
-        <a href="#notices" data-view="notices">공지·이미지</a>
-        <a href="#members" data-view="members">회원관리</a>
-        <a href="#blacklist" data-view="blacklist">블랙리스트</a>
-        <a href="#intake" data-view="intake">접수 설정 <span class="dot" id="navDot"></span></a>
+        <div class="menu" data-group="wait">
+          <a href="#queue" class="top">대기 관리 ▾</a>
+          <div class="drop">
+            <a href="#queue" data-view="queue">대기 현황 <span class="pill" id="cntWait">0팀 대기(총 0명)</span></a>
+            <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
+            <a href="#tournaments" data-view="tournaments">대회 관리</a>
+          </div>
+        </div>
+        <div class="menu" data-group="setting">
+          <a href="#history" class="top">설정 <span class="dot navDot"></span> ▾</a>
+          <div class="drop">
+            <a href="#history" data-view="history">이력 조회</a>
+            <a href="#calendar" data-view="calendar">행사 일정</a>
+            <a href="#notices" data-view="notices">공지/이미지</a>
+            <a href="#stats" data-view="stats">통계</a>
+            <a href="#members" data-view="members">회원 관리</a>
+            <a href="#blacklist" data-view="blacklist">블랙리스트</a>
+            <a href="#intake" data-view="intake">QR 관리 <span class="dot navDot"></span></a>
+          </div>
+        </div>
       </nav>
       <button id="logout" style="margin-left:auto">로그아웃</button>
     </div>
@@ -163,7 +183,7 @@
 
   <main>
     <section id="v-queue" hidden>
-      <h2>대기 목록</h2>
+      <h2>대기 현황</h2>
       <p class="sub">호출하거나 레인을 입력해 배정합니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
       <form id="manual" class="panel field" style="margin-bottom:12px">
         <strong>수기 등록</strong>
@@ -206,7 +226,7 @@
     </section>
 
     <section id="v-tournaments" hidden>
-      <h2>정기 대회 신청</h2>
+      <h2>대회 관리</h2>
       <p class="sub">접수 기간과 정원을 정하면 손님이 /tournament 페이지에서 신청합니다. 정원이 차면 대기로 받고, 자리가 나면 순서대로 입금 대기로 올라갑니다.</p>
       <form id="tForm" class="panel" style="margin-bottom:12px">
         <div class="field">
@@ -386,7 +406,7 @@
     </section>
 
     <section id="v-intake" hidden>
-      <h2>접수 설정</h2>
+      <h2>QR 관리</h2>
       <p class="sub">손님은 매장의 QR 코드를 스캔해야 접수할 수 있습니다.</p>
       <div class="settings">
         <div class="panel" id="qrPanel">
@@ -445,7 +465,8 @@ async function post(url, body) {
 function route() {
   const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'queue';
   for (const n of VIEWS) $('v-' + n).hidden = n !== v;
-  document.querySelectorAll('nav a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+  document.querySelectorAll('.drop a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+  document.querySelectorAll('.menu').forEach((m) => m.setAttribute('aria-current', String(!!m.querySelector(`a[data-view="${v}"]`))));
   if (v === 'history') loadHistory();
   if (v === 'blacklist') loadBlacklist();
   if (v === 'members') loadMembers();
@@ -868,8 +889,10 @@ window.addEventListener('hashchange', route);
 function drawIntake() {
   $('intakeState').textContent = !intake.open ? '접수 중지' : intake.openNow ? '접수 중' : '접수 시간 외';
   $('intakeState').className = 'state ' + (intake.openNow ? 'on' : 'off');
-  $('navDot').className = 'dot ' + (intake.openNow ? 'on' : intake.open ? 'off' : '');
-  $('navDot').title = $('intakeState').textContent;
+  document.querySelectorAll('.navDot').forEach((d) => {
+    d.className = 'navDot dot ' + (intake.openNow ? 'on' : intake.open ? 'off' : '');
+    d.title = $('intakeState').textContent;
+  });
   $('schedOn').checked = intake.schedule.enabled;
   $('schedStart').value = intake.schedule.start; $('schedEnd').value = intake.schedule.end;
   $('toggleIntake').textContent = intake.open ? '접수 중지하기' : '접수 시작하기';
@@ -892,7 +915,7 @@ async function load() {
 
   const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
-  $('cntWait').textContent = waitingList.length; $('cntDone').textContent = done.length;
+  $('cntWait').textContent = `${waitingList.length}팀 대기(총 ${waitingList.reduce((s, e) => s + e.partySize, 0)}명)`; $('cntDone').textContent = done.length;
 
   $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
     <div class="row ${e.status}" data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
