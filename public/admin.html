@@ -41,6 +41,7 @@
   .menu[aria-current="true"] .top { color:#fff; border-bottom-color:var(--accent); }
   .drop { display:none; position:absolute; top:100%; left:0; min-width:190px; padding:6px; background:var(--ink); border-radius:0 0 8px 8px; box-shadow:0 8px 20px rgba(0,0,0,.3); flex-direction:column; }
   .menu:hover .drop, .menu:focus-within .drop { display:flex; }
+  .menu.shut .drop { display:none; }
   .drop a { padding:10px 12px; border-radius:6px; border-bottom:0; justify-content:space-between; }
   .drop a:hover { background:rgba(255,255,255,.1); }
   .drop a[aria-current="page"] { background:rgba(255,255,255,.14); }
@@ -156,16 +157,11 @@
     <div class="bar">
       <span class="brand">오란다 볼링</span>
       <nav aria-label="관리 메뉴">
-        <div class="menu" data-group="wait">
-          <a href="#queue" class="top">대기 관리 ▾</a>
-          <div class="drop">
-            <a href="#queue" data-view="queue">대기 현황 <span class="pill" id="cntWait">0팀 대기(총 0명)</span></a>
-            <a href="#done" data-view="done">배정 완료 <span class="pill" id="cntDone">0</span></a>
-            <a href="#tournaments" data-view="tournaments">대회 관리</a>
-          </div>
-        </div>
-        <div class="menu" data-group="setting">
-          <a href="#history" class="top">설정 <span class="dot navDot"></span> ▾</a>
+        <div class="menu"><a href="#queue" class="top" data-view="queue">대기 관리</a></div>
+        <div class="menu"><a href="#tournaments" class="top" data-view="tournaments">대회 관리</a></div>
+        <div class="menu"><a href="#intake" class="top" data-view="intake">QR 관리 <span class="dot navDot"></span></a></div>
+        <div class="menu">
+          <a href="#history" class="top">설정 ▾</a>
           <div class="drop">
             <a href="#history" data-view="history">이력 조회</a>
             <a href="#calendar" data-view="calendar">행사 일정</a>
@@ -173,17 +169,17 @@
             <a href="#stats" data-view="stats">통계</a>
             <a href="#members" data-view="members">회원 관리</a>
             <a href="#blacklist" data-view="blacklist">블랙리스트</a>
-            <a href="#intake" data-view="intake">QR 관리 <span class="dot navDot"></span></a>
           </div>
         </div>
       </nav>
-      <button id="logout" style="margin-left:auto">로그아웃</button>
+      <button id="sound" style="margin-left:auto" title="새 대기가 등록되면 소리로 알립니다">🔕 알림음 꺼짐</button>
+      <button id="logout">로그아웃</button>
     </div>
   </header>
 
   <main>
     <section id="v-queue" hidden>
-      <h2>대기 현황</h2>
+      <h2>대기 현황 <small id="cntWait" class="sub">0팀 대기(총 0명)</small></h2>
       <p class="sub">호출하거나 레인을 입력해 배정합니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
       <form id="manual" class="panel field" style="margin-bottom:12px">
         <strong>수기 등록</strong>
@@ -197,8 +193,8 @@
       <div id="msg" class="err" role="alert"></div>
     </section>
 
-    <section id="v-done" hidden>
-      <h2>배정 완료</h2>
+    <section id="v-done" hidden style="margin-top:28px">
+      <h2>배정 완료 <small id="cntDone" class="sub">0팀</small></h2>
       <p class="sub">오늘 레인을 배정한 팀입니다. 최근 배정이 위에 표시됩니다.</p>
       <div class="wrap"><table>
         <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정 시각</th><th></th></tr></thead>
@@ -463,8 +459,9 @@ async function post(url, body) {
 }
 
 function route() {
-  const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'queue';
-  for (const n of VIEWS) $('v-' + n).hidden = n !== v;
+  const h = location.hash.slice(1);
+  const v = VIEWS.includes(h) && h !== 'done' ? h : 'queue';
+  for (const n of VIEWS) $('v-' + n).hidden = n !== v && !(v === 'queue' && n === 'done');
   document.querySelectorAll('.drop a').forEach((a) => (a.dataset.view === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   document.querySelectorAll('.menu').forEach((m) => m.setAttribute('aria-current', String(!!m.querySelector(`a[data-view="${v}"]`))));
   if (v === 'history') loadHistory();
@@ -886,6 +883,33 @@ $('manual').addEventListener('submit', async (ev) => {
 });
 window.addEventListener('hashchange', route);
 
+// 새 대기 알림음: 브라우저는 사용자가 한 번 누르기 전에는 소리를 낼 수 없어, 켜기 버튼을 누르거나 화면을 처음 누를 때 오디오를 준비한다
+let soundOn = localStorage.getItem('alertSound') === '1', audio;
+function drawSound() { $('sound').textContent = soundOn ? '🔔 알림음 켜짐' : '🔕 알림음 꺼짐'; }
+function beep() {
+  if (!soundOn || !audio || audio.state !== 'running') return;
+  [880, 1175].forEach((hz, i) => {
+    const o = audio.createOscillator(), g = audio.createGain(), t = audio.currentTime + i * 0.18;
+    o.frequency.value = hz; o.connect(g); g.connect(audio.destination);
+    g.gain.setValueAtTime(0.3, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    o.start(t); o.stop(t + 0.17);
+  });
+}
+function prepareAudio() { audio = audio || new AudioContext(); return audio.resume(); }
+$('sound').onclick = async () => {
+  soundOn = !soundOn;
+  localStorage.setItem('alertSound', soundOn ? '1' : '0');
+  drawSound();
+  if (soundOn) { await prepareAudio(); beep(); }
+};
+document.addEventListener('click', () => { if (soundOn) prepareAudio(); });
+drawSound();
+// 하위 메뉴를 고르면 드롭다운을 닫고, 마우스가 메뉴를 벗어나면 다시 열 수 있게 한다
+document.querySelectorAll('.menu').forEach((m) => {
+  m.addEventListener('click', (e) => { if (e.target.closest('.drop a')) { m.classList.add('shut'); document.activeElement.blur(); } });
+  m.addEventListener('mouseleave', () => m.classList.remove('shut'));
+});
+
 function drawIntake() {
   $('intakeState').textContent = !intake.open ? '접수 중지' : intake.openNow ? '접수 중' : '접수 시간 외';
   $('intakeState').className = 'state ' + (intake.openNow ? 'on' : 'off');
@@ -911,7 +935,7 @@ async function load() {
   if (r.status === 401) { $('app').hidden = true; $('login').hidden = false; return; }
   const { entries } = await r.json();
   $('login').hidden = true; $('app').hidden = false;
-  if (!es) { es = new EventSource('/api/events'); es.onmessage = load; loadIntake(); route(); }
+  if (!es) { es = new EventSource('/api/events'); es.onmessage = (e) => { load(); if (e.data === 'new') beep(); }; loadIntake(); route(); }
 
   const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();

@@ -246,7 +246,7 @@ const recordPasswordFail = (ip, now = Date.now()) => {
   loginFailsAll.push(now);
 };
 const listeners = new Set();
-const notify = () => listeners.forEach((res) => res.write('data: changed\n\n'));
+const notify = (kind = 'changed') => listeners.forEach((res) => res.write(`data: ${kind}\n\n`));
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -402,7 +402,7 @@ const api = {
     const token = crypto.randomBytes(12).toString('hex');
     db.prepare('INSERT INTO entries (token,name,phone,party_size,user_id) VALUES (?,?,?,?,?)').run(token, name, phone, party, user.id);
     touchUser(user.id);
-    notify();
+    notify('new'); // 관리자 화면이 알림음을 낸다
     json(res, 201, { token });
   },
   'POST /api/admin/login': async (req, res) => {
