@@ -12,6 +12,7 @@
     --accent:#0b7a75; --accent-ink:#fff; --accent-soft:#dff3f1;
     --call:#c76a00; --call-soft:#fff0d9; --ok:#2b8a3e; --ok-soft:#e1f4e5; --bad:#cf2f2f;
     --radius:10px;
+    --blue:#2563eb; --blue-soft:#eff6ff; --blue-ink:#1d4ed8;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -19,6 +20,7 @@
       --ink:#08181f; --ink-text:#e8f1f4; --ink-muted:#7a9aa6;
       --accent:#35c2b9; --accent-ink:#06201f; --accent-soft:#12383a;
       --call:#ffb347; --call-soft:#3a2b10; --ok:#69db7c; --ok-soft:#173222; --bad:#ff6b6b;
+      --blue:#2f5fd0; --blue-soft:#14233f; --blue-ink:#8db1ff;
     }
   }
   * { box-sizing:border-box; }
@@ -67,13 +69,7 @@
   input[type=text], input[type=time], input[type=password], input[type=date] { font:inherit; padding:9px 10px; min-height:40px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
   .err { color:var(--bad); min-height:1.4em; }
 
-  /* 대기 카드 목록 */
-  .list { display:grid; gap:10px; }
-  .row { display:grid; grid-template-columns:56px 1fr auto; gap:14px; align-items:center; background:var(--card); border:1px solid var(--line); border-left:6px solid var(--line); border-radius:var(--radius); padding:12px 16px; }
-  .row.CALLED { border-left-color:var(--call); background:linear-gradient(90deg,var(--call-soft),var(--card) 40%); }
-  .row.WAITING { border-left-color:var(--accent); }
-  .pos { font-size:2rem; font-weight:800; text-align:center; line-height:1; }
-  .pos small { display:block; font-size:.7rem; font-weight:500; color:var(--muted); margin-top:4px; }
+  /* 대기 현황 */
   .who { font-size:1.1rem; font-weight:700; }
   .meta { color:var(--muted); font-size:.88rem; display:flex; flex-wrap:wrap; gap:4px 14px; }
   .badge { display:inline-block; padding:1px 9px; border-radius:99px; font-size:.78rem; font-weight:700; margin-left:6px; vertical-align:middle; }
@@ -81,22 +77,42 @@
   .badge.CALLED { background:var(--call-soft); color:var(--call); }
   .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
   .actions input { width:110px; }
-  .qhead, .qline { display:grid; grid-template-columns:64px minmax(120px,1.4fr) 72px minmax(130px,1.2fr) 70px minmax(110px,1fr); gap:12px; align-items:center; }
-  .qhead { padding:0 22px 6px; font-size:.8rem; color:var(--muted); font-weight:600; }
-  .q { background:var(--card); border:1px solid var(--line); border-left:6px solid var(--line); border-radius:var(--radius); }
-  .q.CALLED { border-left-color:var(--call); background:linear-gradient(90deg,var(--call-soft),var(--card) 40%); }
-  .q.WAITING { border-left-color:var(--accent); }
-  .q.sel { box-shadow:0 0 0 2px var(--accent); }
-  .qline { padding:12px 16px; cursor:pointer; }
-  .qline .no { font-size:1.5rem; font-weight:800; text-align:center; }
-  .qline .nm { font-weight:700; font-size:1.05rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .qline .memo { display:block; font-weight:400; font-size:.8rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,.05); }
+  .cardhd { display:flex; align-items:center; gap:14px; padding:18px 24px; }
+  .cardhd .ico { width:44px; height:44px; border-radius:12px; display:grid; place-items:center; font-size:1.3rem; background:rgba(128,128,128,.2); flex:none; }
+  .cardhd h3 { margin:0; font-size:1.25rem; letter-spacing:-.01em; }
+  .cardhd h3 small { font-size:1rem; margin-left:6px; }
+  .cardhd p { margin:0; font-size:.85rem; opacity:.75; }
+  .cardhd .grow { flex:1; }
+  .cardhd button { border-radius:99px; min-height:36px; padding:6px 16px; }
+  .done { margin-bottom:20px; background:var(--bg); }
+  .done > summary { list-style:none; cursor:pointer; }
+  .done > summary::-webkit-details-marker { display:none; }
+  .done .chev { display:inline-block; transition:transform .15s; margin-left:6px; opacity:.6; }
+  .done[open] .chev { transform:rotate(180deg); }
+  .done .wrap { margin:0 16px 16px; }
+  .waitcard .cardhd { background:var(--blue); color:#fff; }
+  .waitcard .cardhd .ico { background:rgba(255,255,255,.2); }
+  .waitcard .cardhd button { background:#fff; color:var(--blue); border-color:#fff; }
+  #manual { margin:0; border:0; border-bottom:1px solid var(--line); border-radius:0; background:var(--blue-soft); }
+  .qhead, .qline { display:grid; grid-template-columns:72px 100px minmax(170px,1.6fr) 90px minmax(140px,1.2fr) minmax(100px,1.4fr); gap:12px; align-items:center; padding:0 24px; }
+  .qhead { background:var(--blue-soft); color:var(--blue-ink); font-weight:700; font-size:.92rem; min-height:48px; }
+  .q { border-top:1px solid var(--line); }
+  .q.sel { background:var(--blue-soft); }
+  .qline { min-height:64px; cursor:pointer; }
+  .qline:hover { background:var(--blue-soft); }
+  .qline .no { width:34px; height:34px; border-radius:50%; background:var(--blue); color:#fff; display:grid; place-items:center; font-weight:700; }
+  .qline .time { font-family:ui-monospace,Consolas,monospace; font-weight:700; }
+  .qline .nm { font-weight:600; font-size:1.05rem; display:flex; align-items:center; gap:6px; min-width:0; }
+  .qline .nm .chev { color:var(--muted); transition:transform .15s; }
+  .q.sel .nm .chev { transform:rotate(90deg); color:var(--blue); }
+  .qline .phone { font-family:ui-monospace,Consolas,monospace; color:var(--muted); }
   .qline .badge { margin-left:0; }
-  .qact { padding:10px 16px 14px; border-top:1px dashed var(--line); justify-content:flex-start; }
-  .fold { margin-top:16px; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:0 16px; }
-  .fold > summary { cursor:pointer; padding:14px 0; font-weight:700; font-size:1.05rem; }
-  .fold[open] > summary { border-bottom:1px solid var(--line); margin-bottom:12px; }
-  .fold .wrap { margin-bottom:16px; }
+  .qact { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 24px; background:var(--ok-soft); border-top:1px solid var(--line); justify-content:flex-start; }
+  .qact .who { font-size:.95rem; color:var(--ok); padding-right:6px; }
+  .qact .sep { width:1px; align-self:stretch; background:var(--line); margin:0 6px; }
+  .qact button { border:0; color:#fff; border-radius:8px; min-height:36px; }
+  .qact .t { background:#14b8a6; } .qact .p { background:#818cf8; } .qact .y { background:#fbbf24; color:#3b2a00; } .qact .d { background:#374151; }
   .empty { padding:40px 16px; text-align:center; color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:var(--radius); }
 
   /* 행사 캘린더 */
@@ -150,7 +166,6 @@
   @media (max-width:720px) {
     .bar { gap:12px; } .brand { display:none; }
     nav a { padding:0 12px; }
-    .row { grid-template-columns:44px 1fr; } .row .actions { grid-column:1 / -1; justify-content:flex-start; }
     .settings { grid-template-columns:1fr; }
   }
   @media print {
@@ -197,29 +212,37 @@
 
   <main>
     <section id="v-queue" hidden>
-      <h2>대기 현황 <small id="cntWait" class="sub">0팀 대기(총 0명)</small></h2>
-      <p class="sub">대기자를 누르면 호출·배정·양보 등 메뉴가 열립니다. 레인이 여러 개면 쉼표로 구분하세요 (예: 5,6).</p>
-      <div class="qhead" aria-hidden="true"><span>순번</span><span>이름</span><span>인원</span><span>연락처</span><span>접수</span><span>상태</span></div>
-      <div id="rows" class="list"></div>
-      <div id="msg" class="err" role="alert"></div>
-
-      <details id="doneBox" class="fold">
-        <summary>배정 완료 <small id="cntDone" class="sub">0팀</small></summary>
-        <p class="sub">오늘 레인을 배정한 팀입니다. 최근 배정이 위에 표시됩니다.</p>
+      <details id="doneBox" class="card done">
+        <summary class="cardhd">
+          <span class="ico">✓</span>
+          <div class="grow"><h3>배정완료목록 <span class="chev">⌄</span></h3><p>최근 배정 순 · <span id="cntDone">0팀</span></p></div>
+          <button type="button" id="refreshDone">⟳ 새로고침</button>
+        </summary>
         <div class="wrap"><table>
           <thead><tr><th>이름</th><th>전화</th><th>인원</th><th>레인</th><th>배정 시각</th><th></th></tr></thead>
           <tbody id="done"></tbody>
         </table></div>
       </details>
 
-      <form id="manual" class="panel field" style="margin-top:12px">
-        <strong>수기 등록</strong>
-        <input type="text" id="mName" placeholder="이름" maxlength="20" required style="width:120px">
-        <input type="text" id="mPhone" placeholder="전화 (선택)" inputmode="numeric" style="width:150px">
-        <input type="text" id="mParty" placeholder="인원" inputmode="numeric" required style="width:70px">
-        <input type="text" id="mMemo" placeholder="메모 (선택)" maxlength="200" style="width:180px">
-        <button class="primary">등록</button>
-      </form>
+      <div class="card waitcard">
+        <div class="cardhd">
+          <span class="ico">⌛</span>
+          <div class="grow"><h3>대기현황 <small id="cntWait">0팀</small></h3><p>레인 배정 대기 중인 고객 현황 · <span id="waitTotal">총 0명</span></p></div>
+          <button type="button" id="addManual">+ 추가</button>
+          <button type="button" id="refreshWait">⟳ 새로고침</button>
+        </div>
+        <form id="manual" class="panel field" hidden>
+          <strong>수기 등록</strong>
+          <input type="text" id="mName" placeholder="이름" maxlength="20" required style="width:120px">
+          <input type="text" id="mPhone" placeholder="전화 (선택)" inputmode="numeric" style="width:150px">
+          <input type="text" id="mParty" placeholder="인원" inputmode="numeric" required style="width:70px">
+          <input type="text" id="mMemo" placeholder="메모 (선택)" maxlength="200" style="width:180px">
+          <button class="primary">등록</button>
+        </form>
+        <div class="qhead" aria-hidden="true"><span>번호</span><span>신청시간</span><span>이름</span><span>인원</span><span>전화번호</span><span>메모</span></div>
+        <div id="rows"></div>
+      </div>
+      <div id="msg" class="err" role="alert"></div>
     </section>
 
     <section id="v-history" hidden>
@@ -901,6 +924,9 @@ $('manual').addEventListener('submit', async (ev) => {
   ev.target.reset();
   load();
 });
+$('addManual').onclick = () => { $('manual').hidden = !$('manual').hidden; if (!$('manual').hidden) $('mName').focus(); };
+$('refreshWait').onclick = load;
+$('refreshDone').onclick = (ev) => { ev.preventDefault(); load(); }; // 접힘 토글(summary 클릭)을 막고 새로고침만 한다
 window.addEventListener('hashchange', route);
 
 // 새 대기 알림음: 브라우저는 사용자가 한 번 누르기 전에는 소리를 낼 수 없어, 켜기 버튼을 누르거나 화면을 처음 누를 때 오디오를 준비한다
@@ -971,23 +997,21 @@ async function load() {
 
   const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
-  $('cntWait').textContent = `${waitingList.length}팀 대기(총 ${waitingList.reduce((s, e) => s + e.partySize, 0)}명)`; $('cntDone').textContent = `${done.length}팀`;
+  $('cntWait').textContent = `${waitingList.length}팀`; $('waitTotal').textContent = `총 ${waitingList.reduce((s, e) => s + e.partySize, 0)}명`; $('cntDone').textContent = `${done.length}팀`;
 
   if (!waitingList.some((e) => e.id === selectedId)) selectedId = null;
-  const laneDraft = $('rows').querySelector('.qact input')?.value; // 화면이 갱신돼도 입력 중이던 레인을 유지한다
   $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
     <div class="q ${e.status}${e.id === selectedId ? ' sel' : ''}" data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
       <div class="qline" tabindex="0" role="button" aria-expanded="${e.id === selectedId}">
-        <div class="no">${i + 1}</div>
-        <div class="nm">${esc(e.name)}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}${e.memo ? `<span class="memo">${esc(e.memo)}</span>` : ''}</div>
+        <div><span class="no">${i + 1}</span></div>
+        <div class="time">${esc(e.createdAt.slice(11, 16))}</div>
+        <div class="nm"><span class="chev">›</span>${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</div>
         <div>${e.partySize}명</div>
-        <div>${esc(e.phone)}</div>
-        <div>${esc(e.createdAt.slice(11, 16))}</div>
-        <div><span class="badge ${e.status}">${LABEL[e.status]}${e.lanes ? ' ' + esc(e.lanes) + '번' : ''}</span></div>
+        <div class="phone">${esc(e.phone) || '—'}</div>
+        <div>${esc(e.memo) || '—'}</div>
       </div>
-      ${e.id === selectedId ? `<div class="actions qact">${actions(e)}</div>` : ''}
-    </div>`).join('') : '<div class="empty">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
-  if (laneDraft) $('rows').querySelector('.qact input').value = laneDraft;
+      ${e.id === selectedId ? `<div class="qact">${actions(e)}</div>` : ''}
+    </div>`).join('') : '<div class="empty" style="border:0;border-radius:0">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
 
   $('done').innerHTML = done.length ? done.map((e) => `
     <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}" data-lanes="${esc(e.lanes)}">
@@ -999,14 +1023,17 @@ async function load() {
 }
 
 function actions(e) {
-  return `${e.status === 'WAITING' ? '<button class="call" data-act="call">호출</button>' : ''}
-    <button data-act="yield" title="한 칸 뒤로">양보</button>
-    <button data-act="tail" title="맨 뒤로 보내기">맨뒤로</button>
-    <button data-act="edit">수정</button>
-    <button class="danger" data-act="blacklist">블랙리스트</button>
-    <input type="text" placeholder="레인 5,6" aria-label="레인 번호">
-    <button class="primary" data-act="assign">배정</button>
-    <button class="danger" data-act="cancel">취소</button>`;
+  return `<strong class="who">👤 ${esc(e.name)}</strong><span class="sep"></span>
+    ${e.status === 'WAITING' ? '<button class="t" data-act="call">호출</button>' : ''}
+    <button class="t" data-act="assign">레인배정</button>
+    <button class="t" data-act="yield" title="한 칸 뒤로">양보하기</button>
+    <button class="t" data-act="tail">맨뒤로보내기</button>
+    <button class="t" data-act="cancel">대기취소</button>
+    <span class="sep"></span>
+    <button class="p" data-act="edit-party">인원수정</button>
+    <button class="y" data-act="edit-memo">메모설정</button>
+    <span class="sep"></span>
+    <button class="d" data-act="blacklist">블랙리스트</button>`;
 }
 
 let selectedId = null;
@@ -1025,7 +1052,11 @@ document.addEventListener('click', async (ev) => {
   if (!btn) return;
   const row = btn.closest('[data-id]'), act = btn.dataset.act;
   let body = {};
-  if (act === 'assign') body = { lanes: row.querySelector('input')?.value };
+  if (act === 'assign') {
+    const lanes = prompt('배정할 레인 번호 (예: 5,6)', '');
+    if (!lanes) return;
+    body = { lanes };
+  }
   if (act === 'cancel') { // 확인 창에서 취소하면 중단, 사유는 비워도 된다
     const reason = prompt('취소 사유를 입력하세요 (선택)', '');
     if (reason === null) return;
@@ -1041,15 +1072,23 @@ document.addEventListener('click', async (ev) => {
     if (!reason) return;
     body = { reason };
   }
-  if (act === 'edit') {
+  if (act === 'edit' || act === 'edit-party') { // 배정 완료 표의 `수정`은 인원·메모를 함께 묻고, 대기자 메뉴는 하나씩 묻는다
     const party = prompt('인원 (1~8)', row.dataset.party);
     if (party === null) return;
+    body = { partySize: party, memo: row.dataset.memo };
+    if (act === 'edit') {
+      const memo = prompt('메모', row.dataset.memo);
+      if (memo === null) return;
+      body.memo = memo;
+    }
+  }
+  if (act === 'edit-memo') {
     const memo = prompt('메모', row.dataset.memo);
     if (memo === null) return;
-    body = { partySize: party, memo };
+    body = { partySize: row.dataset.party, memo };
   }
   $('msg').textContent = '';
-  const r = await post(`/api/admin/entries/${row.dataset.id}/${act}`, body);
+  const r = await post(`/api/admin/entries/${row.dataset.id}/${act.startsWith('edit') ? 'edit' : act}`, body);
   if (!r.ok) $('msg').textContent = r.body.error || '처리에 실패했습니다.';
   load();
 });
