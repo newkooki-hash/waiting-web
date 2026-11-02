@@ -97,8 +97,8 @@
   .stat { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; }
   .stat .num { font-size:1.8rem; font-weight:800; line-height:1.2; }
   .bar-row { display:grid; grid-template-columns:44px 1fr 130px; gap:10px; align-items:center; padding:3px 0; }
-  .bar { height:14px; background:var(--bg); border-radius:7px; overflow:hidden; }
-  .bar span { display:block; height:100%; background:var(--accent); border-radius:7px; }
+  .meter { height:14px; background:var(--bg); border-radius:7px; overflow:hidden; }
+  .meter span { display:block; height:100%; background:var(--accent); border-radius:7px; }
   .bar-val { font-size:.85rem; color:var(--muted); text-align:right; }
 
   /* 완료 표 */
@@ -493,7 +493,7 @@ async function loadStats() {
   const peak = Math.max(1, ...b.hours.map((h) => h.teams));
   $('sHours').innerHTML = b.hours.length ? b.hours.map((h) => `
     <div class="bar-row"><span class="bar-label">${String(h.hour).padStart(2, '0')}시</span>
-    <span class="bar"><span style="width:${Math.round(h.teams / peak * 100)}%"></span></span>
+    <span class="meter"><span style="width:${Math.round(h.teams / peak * 100)}%"></span></span>
     <span class="bar-val">${h.teams}팀 · ${minText(h.avgWait)}</span></div>`).join('') : '<div class="meta">기간 내 접수가 없습니다.</div>';
   const DOW = ['일', '월', '화', '수', '목', '금', '토'];
   $('sWeek').innerHTML = b.weekdays.length ? b.weekdays.map((w) => `<tr><td>${DOW[w.dow]}</td><td>${w.teams}</td><td>${w.people}</td><td>${w.canceled}</td><td>${minText(w.avgWait)}</td></tr>`).join('')
