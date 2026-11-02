@@ -108,6 +108,25 @@
   .q.sel .nm .chev { transform:rotate(90deg); color:var(--blue); }
   .qline .phone { font-family:ui-monospace,Consolas,monospace; color:var(--muted); }
   .qline .badge { margin-left:0; }
+  .qline .nmtxt { display:flex; flex-direction:column; min-width:0; }
+  .qline .nmline { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .qline small { display:none; color:var(--muted); font-size:.8rem; font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #logout, .menu .top { white-space:nowrap; flex:none; }
+  /* 창이 좁아지면 덜 중요한 열부터 접는다: 1000px 이하는 메모를 이름 아래로, 760px 이하는 시간·전화번호도 이름 아래로 */
+  @media (max-width:1000px) {
+    .menu .top { padding:0 12px; } .brand { display:none; }
+    .qhead, .qline { grid-template-columns:56px 80px minmax(150px,1.6fr) 70px minmax(130px,1.2fr); padding:0 16px; gap:10px; }
+    .qhead span:nth-child(6), .qline .cmemo { display:none; }
+    .qline .nmemo { display:block; }
+    .q .qact { padding:12px 16px; }
+  }
+  @media (max-width:760px) {
+    .qhead { display:none; }
+    .qline { grid-template-columns:44px minmax(0,1fr) 60px; }
+    .qline .time, .qline .phone { display:none; }
+    .qline .nmeta { display:block; }
+    .cardhd { padding:14px 16px; flex-wrap:wrap; }
+  }
   .qact { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 24px; background:var(--ok-soft); border-top:1px solid var(--line); justify-content:flex-start; }
   .qact .who { font-size:.95rem; color:var(--ok); padding-right:6px; }
   .qact .sep { width:1px; align-self:stretch; background:var(--line); margin:0 6px; }
@@ -1005,10 +1024,14 @@ async function load() {
       <div class="qline" tabindex="0" role="button" aria-expanded="${e.id === selectedId}">
         <div><span class="no">${i + 1}</span></div>
         <div class="time">${esc(e.createdAt.slice(11, 16))}</div>
-        <div class="nm"><span class="chev">›</span>${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</div>
+        <div class="nm"><span class="chev">›</span><span class="nmtxt">
+          <span class="nmline">${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</span>
+          <small class="nmeta">${esc(e.createdAt.slice(11, 16))}${e.phone ? ' · ' + esc(e.phone) : ''}</small>
+          ${e.memo ? `<small class="nmemo">${esc(e.memo)}</small>` : ''}
+        </span></div>
         <div>${e.partySize}명</div>
         <div class="phone">${esc(e.phone) || '—'}</div>
-        <div>${esc(e.memo) || '—'}</div>
+        <div class="cmemo">${esc(e.memo) || '—'}</div>
       </div>
       ${e.id === selectedId ? `<div class="qact">${actions(e)}</div>` : ''}
     </div>`).join('') : '<div class="empty" style="border:0;border-radius:0">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
