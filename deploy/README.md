@@ -41,6 +41,7 @@ sudo nano /etc/waiting-web.env
 |---|---|
 | `ADMIN_PASSWORD` | 관리자 비밀번호. 길고 추측하기 어렵게 |
 | `CODE_SECRET` | 임의의 긴 문자열 |
+| `PHONE_KEY` | 전화번호 암호화 키(임의의 긴 문자열, **필수**: 없으면 서버가 시작되지 않는다). 처음 켜면 기존 평문 번호가 자동으로 암호화된다. 잃어버리면 저장된 번호를 복구할 수 없으므로 비밀번호 관리자 등 별도 장소에 보관하고, 서버 `.env` 파일과 DB 백업을 같은 곳에 두지 않는다 |
 | `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET` | 카카오 앱 키 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 네이버 앱 키 |
 | `SOLAPI_API_KEY`, `SOLAPI_API_SECRET`, `SOLAPI_SENDER` | 솔라피 |
@@ -66,6 +67,8 @@ sudo systemctl status waiting-web --no-pager
 | 재시작 | `sudo systemctl restart waiting-web` |
 | Caddy 로그 | `sudo journalctl -u caddy -f` |
 | 수동 백업 | `sudo -u waiting /opt/waiting-web/deploy/backup.sh` |
+| 원문 조회 기록 보기 | `sudo -u waiting node --env-file=/etc/waiting-web.env /opt/waiting-web/deploy/audit.js pii [--q 이름] [--limit 100]` |
+| 동의 기록 보기 | `sudo -u waiting node --env-file=/etc/waiting-web.env /opt/waiting-web/deploy/audit.js consents [--q 이름] [--limit 100]` |
 
 - 데이터: `/var/lib/waiting-web/waiting.db`
 - 백업: `/var/backups/waiting-web/` (14일 보관). 서버가 사라져도 복구할 수 있도록 **Lightsail 스냅샷**(자동 스냅샷 켜기)도 함께 쓰는 것을 권장한다.
@@ -75,5 +78,6 @@ sudo systemctl status waiting-web --no-pager
 새 서버에서 3~4단계를 반복하고, 기존 서버의 `waiting.db`와 `/etc/waiting-web.env`를 복사한 뒤 DNS의 A 레코드만 새 IP로 바꾼다.
 
 ## 주의
+- 전화번호는 `PHONE_KEY`로 암호화되어 DB에 저장된다(이름·이메일은 평문). **처음 암호화를 적용하기 전에 수동 백업을 한 번 한다.**
 - 개인정보(전화번호 등)가 DB에 있다. 백업 파일을 외부에 공유하지 않는다.
 - 관리자 로그인은 시도 횟수 제한이 없다. 오픈 전에 보강한다.

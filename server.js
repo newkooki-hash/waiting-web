@@ -20,7 +20,31 @@ const LANES = 18;
 const MAX_PARTY = 8;
 const PUBLIC = path.join(__dirname, 'public');
 
-const db = new DatabaseSync(process.env.DB_FILE || path.join(__dirname, 'waiting.db'));
+// 전화번호 암호화 저장: 같은 번호는 항상 같은 암호문이 되는 결정적 암호화(AES-256-GCM, IV는 번호의 HMAC).
+// 그래서 중복 확인·유니크 인덱스·`phone=?` 조회가 그대로 동작한다. 저장은 ep(), 읽기는 dp()를 쓴다.
+// 키(PHONE_KEY)를 잃으면 번호를 복구할 수 없으므로 서버 환경변수와 별도로 안전하게 보관할 것.
+const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'waiting.db');
+if (!process.env.PHONE_KEY && DB_FILE !== ':memory:') throw new Error('PHONE_KEY 환경변수가 필요합니다. (전화번호 암호화 키, 임의의 긴 문자열)');
+const PHONE_KEY = process.env.PHONE_KEY || crypto.randomBytes(32).toString('hex');
+const subkey = (label) => crypto.createHash('sha256').update(`${label}:${PHONE_KEY}`).digest();
+const ENC_KEY = subkey('phone-enc'), IV_KEY = subkey('phone-iv');
+const ENC_PREFIX = 'e1:';
+const ep = (plain) => {
+  if (!plain || plain.startsWith(ENC_PREFIX)) return plain;
+  const iv = crypto.createHmac('sha256', IV_KEY).update(plain).digest().subarray(0, 12);
+  const c = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const ct = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
+  return ENC_PREFIX + Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64url');
+};
+const dp = (stored) => {
+  if (!stored || !stored.startsWith(ENC_PREFIX)) return stored; // 암호화 전 값은 그대로 돌려준다
+  const raw = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64url');
+  const d = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, raw.subarray(0, 12));
+  d.setAuthTag(raw.subarray(12, 28));
+  return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf8');
+};
+
+const db = new DatabaseSync(DB_FILE);
 db.exec(`
 CREATE TABLE IF NOT EXISTS entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,14 +70,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS blacklist (
   reason TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )`);
-const isBlacklisted = (phone) => !!phone && !!db.prepare('SELECT 1 FROM blacklist WHERE phone=?').get(phone);
+const isBlacklisted = (phone) => !!phone && !!db.prepare('SELECT 1 FROM blacklist WHERE phone=?').get(ep(phone));
 const BLACKLISTED = { error: '접수할 수 없습니다. 매장 직원에게 문의해 주세요.', code: 'BLACKLISTED' };
 // 이미 등록된 번호면 사유를 갱신한다. 대기 중인 건은 함께 취소한다
 const addBlacklist = (phone, name, reason) => {
   db.prepare(`INSERT INTO blacklist (phone,name,reason) VALUES (?,?,?)
-    ON CONFLICT(phone) DO UPDATE SET reason=excluded.reason, name=COALESCE(excluded.name, name)`).run(phone, name || null, reason);
+    ON CONFLICT(phone) DO UPDATE SET reason=excluded.reason, name=COALESCE(excluded.name, name)`).run(ep(phone), name || null, reason);
   db.prepare(`UPDATE entries SET status='CANCELED', cancel_reason='블랙리스트', finished_at=datetime('now','localtime')
-    WHERE phone=? AND status IN ('WAITING','CALLED')`).run(phone);
+    WHERE phone=? AND status IN ('WAITING','CALLED')`).run(ep(phone));
   notify();
 };
 // 회원: 현행 시스템에서 가져온 회원(이관)과 신규 가입자(가입)를 한 목록으로 관리한다.
@@ -77,6 +101,8 @@ CREATE TABLE IF NOT EXISTS pii_view_log (
   ip TEXT,
   viewed_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )`);
+try { db.exec("ALTER TABLE pii_view_log ADD COLUMN target TEXT NOT NULL DEFAULT 'member'"); } catch {} // member_id는 target 종류별 대상 id
+try { db.exec('ALTER TABLE pii_view_log ADD COLUMN reason TEXT'); } catch {}
 try { db.exec("ALTER TABLE members ADD COLUMN tier TEXT NOT NULL DEFAULT '일반'"); } catch {}
 try { db.exec('ALTER TABLE members ADD COLUMN verified_at TEXT'); } catch {}
 try { db.exec('ALTER TABLE members ADD COLUMN birth_date TEXT'); } catch {}
@@ -103,21 +129,21 @@ const validDate = (v) => {
 try { db.exec('ALTER TABLE members ADD COLUMN last_used_at TEXT'); } catch {}
 // 마지막 이용일: 로그인·접수·대회 신청·정회원 정보 저장 때 기록한다(자동 삭제에는 쓰지 않는다)
 const touchUser = (userId) => db.prepare("UPDATE members SET last_used_at=datetime('now','localtime') WHERE user_id=?").run(userId);
-const touchPhone = (phone) => phone && db.prepare("UPDATE members SET last_used_at=datetime('now','localtime') WHERE phone=?").run(phone);
+const touchPhone = (phone) => phone && db.prepare("UPDATE members SET last_used_at=datetime('now','localtime') WHERE phone=?").run(ep(phone));
 const FULL = '정회원';
-const isFullMember = (userId, phone) => !!db.prepare('SELECT 1 FROM members WHERE tier=? AND (user_id=? OR phone=?)').get(FULL, userId ?? -1, phone ?? '');
+const isFullMember = (userId, phone) => !!db.prepare('SELECT 1 FROM members WHERE tier=? AND (user_id=? OR phone=?)').get(FULL, userId ?? -1, ep(phone ?? ''));
 const NOT_FULL = { error: '대회는 정회원만 신청할 수 있습니다. 생년월일과 성별을 입력해 정회원으로 가입해 주세요.', code: 'MEMBER_REQUIRED' };
 const memberFor = (user) => {
-  let m = db.prepare('SELECT * FROM members WHERE user_id=? OR phone=?').get(user.id, user.phone);
+  let m = db.prepare('SELECT * FROM members WHERE user_id=? OR phone=?').get(user.id, ep(user.phone));
   if (!m) {
-    db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, user.phone, user.id);
-    m = db.prepare('SELECT * FROM members WHERE phone=?').get(user.phone);
+    db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, ep(user.phone), user.id);
+    m = db.prepare('SELECT * FROM members WHERE phone=?').get(ep(user.phone));
   } else if (!m.user_id) db.prepare('UPDATE members SET user_id=? WHERE id=?').run(user.id, m.id);
   return m;
 };
 const linkMember = (user, phone) => {
-  if (db.prepare('UPDATE members SET user_id=? WHERE phone=?').run(user.id, phone).changes) return;
-  db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, phone, user.id);
+  if (db.prepare('UPDATE members SET user_id=? WHERE phone=?').run(user.id, ep(phone)).changes) return;
+  db.prepare("INSERT INTO members (name,phone,joined_at,source,user_id) VALUES (?,?,datetime('now','localtime'),'가입',?)").run(user.name, ep(phone), user.id);
 };
 // 대기 순서(seq): 접수 순으로 늘어나고, 양보·맨뒤로 보내기가 이 값을 바꾼다
 try { db.exec('ALTER TABLE entries ADD COLUMN seq INTEGER'); } catch {}
@@ -233,7 +259,7 @@ const LOGIN_MAX_FAILS_ALL = 30;
 const loginFails = new Map(); // IP → 실패 시각 목록
 let loginFailsAll = [];
 const recentFails = (list, now) => list.filter((t) => now - t < LOGIN_WINDOW_MS);
-// 잠겨 있으면 안내 문구를, 아니면 null을 돌려준다. 로그인과 개인정보 원문 조회의 비밀번호 입력이 함께 쓴다
+// 잠겨 있으면 안내 문구를, 아니면 null을 돌려준다. 관리자 로그인에 쓴다
 const passwordLocked = (ip, now = Date.now()) => {
   const mine = recentFails(loginFails.get(ip) || [], now);
   loginFailsAll = recentFails(loginFailsAll, now);
@@ -289,7 +315,8 @@ const isAdmin = (req) => {
 };
 const currentUser = (req) => {
   const sid = cookie(req, 'sid');
-  return sid ? db.prepare('SELECT u.* FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?').get(sid) : undefined;
+  const u = sid ? db.prepare('SELECT u.* FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?').get(sid) : undefined;
+  return u && { ...u, phone: dp(u.phone) }; // 번호는 복호화해서 쓴다(저장은 암호문)
 };
 const redirect = (res, to, cookies = []) => {
   res.writeHead(302, { Location: to, 'Set-Cookie': cookies });
@@ -343,7 +370,7 @@ const api = {
     if (!/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     const until = rejoinBlockedUntil({ phone });
     if (until) return json(res, 403, { error: `탈퇴한 번호는 ${until.slice(0, 10)}까지 다시 가입할 수 없습니다. 문의는 매장으로 해 주세요.`, code: 'REJOIN_BLOCKED' });
-    const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(phone, user.id);
+    const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(ep(phone), user.id);
     if (owner) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' });
     const now = Date.now();
     const last = db.prepare('SELECT created_at FROM sms_codes WHERE user_id=? ORDER BY id DESC LIMIT 1').get(user.id);
@@ -351,12 +378,12 @@ const api = {
       return json(res, 429, { error: '잠시 후 다시 요청해 주세요.', retryAfter: Math.ceil((RESEND_MS - (now - last.created_at)) / 1000) });
     const sent = db.prepare('SELECT COUNT(*) n FROM sms_codes WHERE user_id=? AND created_at > ?').get(user.id, now - 24 * 3600 * 1000).n;
     if (sent >= MAX_SENDS_PER_DAY) return json(res, 429, { error: '오늘 인증 요청 횟수를 초과했습니다.' });
-    const phoneSent = db.prepare('SELECT COUNT(*) n FROM sms_codes WHERE phone=? AND created_at > ?').get(phone, now - 24 * 3600 * 1000).n;
+    const phoneSent = db.prepare('SELECT COUNT(*) n FROM sms_codes WHERE phone=? AND created_at > ?').get(ep(phone), now - 24 * 3600 * 1000).n;
     if (phoneSent >= MAX_SENDS_PER_PHONE) return json(res, 429, { error: '오늘 인증 요청 횟수를 초과했습니다.' });
     const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     // 발송 실패 시에도 기록을 남겨 비용이 드는 반복 요청을 막는다
     const row = db.prepare('INSERT INTO sms_codes (user_id,phone,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)')
-      .run(user.id, phone, hashCode(code), now + CODE_TTL_MS, now);
+      .run(user.id, ep(phone), hashCode(code), now + CODE_TTL_MS, now);
     try { await sms.send(phone, `[오란다볼링] 인증번호 ${code} (5분 이내 입력)`); }
     catch (err) {
       console.error('sms send failed:', err.message);
@@ -379,9 +406,9 @@ const api = {
       db.prepare("UPDATE users SET phone=?, phone_verified_at=datetime('now','localtime') WHERE id=?").run(row.phone, user.id);
     } catch { return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' }); }
     db.prepare('UPDATE sms_codes SET used=1 WHERE user_id=?').run(user.id);
-    linkMember(user, row.phone);
+    linkMember(user, dp(row.phone));
     touchUser(user.id);
-    json(res, 200, { ok: true, phone: maskPhone(row.phone) });
+    json(res, 200, { ok: true, phone: maskPhone(dp(row.phone)) });
   },
   'POST /api/entries': async (req, res) => {
     const user = currentUser(req);
@@ -397,10 +424,10 @@ const api = {
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
     if (consentBlocked(res, user.id)) return;
     if (isBlacklisted(phone)) return json(res, 403, BLACKLISTED);
-    const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, phone);
+    const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, ep(phone));
     if (dup) return json(res, 409, { error: '이미 접수된 대기가 있습니다.', token: dup.token });
     const token = crypto.randomBytes(12).toString('hex');
-    db.prepare('INSERT INTO entries (token,name,phone,party_size,user_id) VALUES (?,?,?,?,?)').run(token, name, phone, party, user.id);
+    db.prepare('INSERT INTO entries (token,name,phone,party_size,user_id) VALUES (?,?,?,?,?)').run(token, name, ep(phone), party, user.id);
     touchUser(user.id);
     notify('new'); // 관리자 화면이 알림음을 낸다
     json(res, 201, { token });
@@ -451,7 +478,7 @@ const api = {
     json(res, 200, {
       lanes: LANES,
       entries: rows.map((e) => ({
-        id: e.id, name: e.name, phone: e.phone, partySize: e.party_size,
+        id: e.id, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size,
         status: e.status, lanes: e.lanes, createdAt: e.created_at, assignedAt: e.assigned_at,
         manual: e.user_id === null, memo: e.memo || '',
       })),
@@ -474,17 +501,17 @@ const api = {
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
     if (isBlacklisted(phone)) return json(res, 403, { error: '블랙리스트에 등록된 번호입니다.' });
-    if (phone && db.prepare(`SELECT 1 FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(phone))
+    if (phone && db.prepare(`SELECT 1 FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(ep(phone)))
       return json(res, 409, { error: '이미 접수된 대기가 있습니다.' });
     db.prepare('INSERT INTO entries (token,name,phone,party_size,memo) VALUES (?,?,?,?,?)')
-      .run(crypto.randomBytes(12).toString('hex'), name, phone, party, String(b.memo || '').trim().slice(0, 200) || null);
+      .run(crypto.randomBytes(12).toString('hex'), name, ep(phone), party, String(b.memo || '').trim().slice(0, 200) || null);
     touchPhone(phone);
     notify();
     json(res, 201, { ok: true });
   },
   'GET /api/admin/blacklist': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    json(res, 200, { entries: db.prepare('SELECT id, phone, name, reason, created_at AS createdAt FROM blacklist ORDER BY id DESC').all() });
+    json(res, 200, { entries: db.prepare('SELECT id, phone, name, reason, created_at AS createdAt FROM blacklist ORDER BY id DESC').all().map((b) => ({ ...b, phone: maskPhone(dp(b.phone)) })) });
   },
   'POST /api/admin/blacklist': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
@@ -673,8 +700,9 @@ const api = {
     const where = [], args = [];
     if (kw) {
       const like = `%${kw.replace(/[\\%_]/g, '\\$&')}%`;
-      where.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')");
-      args.push(like, like, like);
+      // 번호는 암호화되어 있어 부분 검색이 안 된다. 번호 전체(숫자 10~11자리)를 입력하면 정확히 일치하는 회원을 찾는다
+      where.push("(name LIKE ? ESCAPE '\\' OR phone = ? OR email LIKE ? ESCAPE '\\')");
+      args.push(like, ep(kw.replace(/\D/g, '')) || null, like); // 숫자가 없으면 번호 조건은 항상 거짓(빈 번호와 맞지 않게)
     }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const total = db.prepare(`SELECT COUNT(*) n FROM members ${w}`).get(...args).n;
@@ -684,7 +712,7 @@ const api = {
       total, page, size,
       entries: rows.map((m) => ({
         id: m.id, name: m.name, age: m.birth_year ? year - m.birth_year : null, gender: GENDER_LABEL[m.gender] || m.gender || '', birthDate: m.birth_date || '', lastUsedAt: (m.last_used_at || '').slice(0, 10),
-        phone: maskPhone(m.phone), email: maskEmail(m.email), source: m.source, tier: m.tier, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
+        phone: maskPhone(dp(m.phone)), email: maskEmail(m.email), source: m.source, tier: m.tier, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
       })),
     });
   },
@@ -730,20 +758,20 @@ const api = {
     const id = Number(new URL(req.url, 'http://x').searchParams.get('id'));
     json(res, 200, { entries: db.prepare('SELECT field, old_value AS oldValue, new_value AS newValue, changed_by AS changedBy, changed_at AS changedAt FROM member_change_log WHERE member_id=? ORDER BY id DESC').all(id) });
   },
-  // 개인정보 원문 조회(결정 11): 관리자 비밀번호를 다시 입력해야 하고, 조회 기록을 남긴다
-  'POST /api/admin/members/reveal': async (req, res) => {
+  // 개인정보 원문 조회(결정 11 변경, 2026-11-04): 비밀번호 대신 조회 사유를 입력하고, 사유와 함께 기록을 남긴다
+  // type: member(전화·이메일) / entry(대기·이력) / blacklist / tournament(대회 신청자)
+  'POST /api/admin/reveal': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    const b = await readBody(req), ip = clientIp(req);
-    const locked = passwordLocked(ip);
-    if (locked) return json(res, 429, { error: locked });
-    if (!sameSecret(b.password, ADMIN_PASSWORD)) {
-      recordPasswordFail(ip);
-      return json(res, 401, { error: '비밀번호가 틀렸습니다.' });
-    }
-    const m = db.prepare('SELECT phone, email FROM members WHERE id=?').get(Number(b.id));
-    if (!m) return json(res, 404, { error: 'not found' });
-    db.prepare('INSERT INTO pii_view_log (admin_id,member_id,ip) VALUES (?,?,?)').run(ADMIN_ID, Number(b.id), ip);
-    json(res, 200, { phone: m.phone, email: m.email || '' });
+    const b = await readBody(req);
+    const reason = String(b.reason || '').trim().slice(0, 100);
+    if (reason.length < 2) return json(res, 400, { error: '조회 사유를 입력하세요.' });
+    const table = { member: 'members', entry: 'entries', blacklist: 'blacklist', tournament: 'tournament_entries' }[b.type];
+    if (!table) return json(res, 400, { error: '조회 대상을 확인하세요.' });
+    const id = Number(b.id);
+    const row = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
+    if (!row || !row.phone) return json(res, 404, { error: 'not found' });
+    db.prepare('INSERT INTO pii_view_log (admin_id,member_id,ip,target,reason) VALUES (?,?,?,?,?)').run(ADMIN_ID, id, clientIp(req), b.type, reason);
+    json(res, 200, { phone: dp(row.phone), email: row.email || '' });
   },
   // 회원 가져오기(M-16): 현행 관리자에서 추출한 CSV. 이미 있는 번호·파일 안 중복은 건너뛴다
   'POST /api/admin/members/import': async (req, res) => {
@@ -770,8 +798,8 @@ const api = {
         if (!name) return fail('이름이 없습니다.');
         if (!/^01\d{8,9}$/.test(phone)) return fail('연락처 형식이 올바르지 않습니다.');
         if (email && !email.includes('@')) return fail('이메일 형식이 올바르지 않습니다.');
-        if (exists.get(phone)) return void report.duplicate++;
-        ins.run(name, phone, email || null, get('gender').slice(0, 10) || null, by, get('joined_at').slice(0, 19) || null, '이관');
+        if (exists.get(ep(phone))) return void report.duplicate++;
+        ins.run(name, ep(phone), email || null, get('gender').slice(0, 10) || null, by, get('joined_at').slice(0, 19) || null, '이관');
         report.imported++;
       });
       db.exec('COMMIT');
@@ -829,9 +857,8 @@ const api = {
     const where = ['date(created_at) BETWEEN ? AND ?'], args = [from, to];
     const kw = (q.get('q') || '').trim();
     if (kw) {
-      where.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')");
-      const like = `%${kw.replace(/[\\%_]/g, '\\$&')}%`;
-      args.push(like, like);
+      where.push("(name LIKE ? ESCAPE '\\' OR phone = ?)"); // 번호는 암호화되어 있어 전체 번호로만 찾는다
+      args.push(`%${kw.replace(/[\\%_]/g, '\\$&')}%`, ep(kw.replace(/\D/g, '')) || null);
     }
     const lane = Number(q.get('lane'));
     if (lane) { where.push("(',' || lanes || ',') LIKE ?"); args.push(`%,${lane},%`); }
@@ -841,7 +868,7 @@ const api = {
       THEN CAST(ROUND((julianday(finished_at) - julianday(created_at)) * 1440) AS INTEGER) END AS wait_min
       FROM entries WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 2000`).all(...args);
     const view = rows.map((e) => ({
-      id: e.id, createdAt: e.created_at, name: e.name, phone: e.phone, partySize: e.party_size, status: e.status,
+      id: e.id, createdAt: e.created_at, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size, status: e.status,
       lanes: e.lanes || '', assignedAt: e.assigned_at || '', waitMin: e.wait_min ?? '', manual: e.user_id === null,
       memo: e.memo || '', cancelReason: e.cancel_reason || '',
     }));
@@ -880,20 +907,21 @@ const withdrawAccount = ({ userId = null, memberId = null }, doneBy) => {
   let member = memberId ? db.prepare('SELECT * FROM members WHERE id=?').get(memberId) : null;
   let user = userId ? db.prepare('SELECT * FROM users WHERE id=?').get(userId) : member?.user_id ? db.prepare('SELECT * FROM users WHERE id=?').get(member.user_id) : null;
   if (!member) member = db.prepare('SELECT * FROM members WHERE user_id=? OR (? IS NOT NULL AND phone=?)').get(user?.id ?? -1, user?.phone ?? null, user?.phone ?? null);
-  const phone = member?.phone || user?.phone || '';
+  const phoneStored = member?.phone || user?.phone || ''; // 암호문(조회·갱신에 쓴다)
+  const phone = dp(phoneStored); // 재가입 제한 해시용 원문
   const uid = user?.id ?? -1;
   const today = new Date().toLocaleDateString('sv');
   // 입금이 확인된 대회가 남아 있으면 환불을 먼저 처리해야 한다
-  if (db.prepare("SELECT 1 FROM tournament_entries e JOIN tournaments t ON t.id=e.tournament_id WHERE e.status='CONFIRMED' AND (e.user_id=? OR (? <> '' AND e.phone=?)) AND substr(t.event_at,1,10) >= ?").get(uid, phone, phone, today))
+  if (db.prepare("SELECT 1 FROM tournament_entries e JOIN tournaments t ON t.id=e.tournament_id WHERE e.status='CONFIRMED' AND (e.user_id=? OR (? <> '' AND e.phone=?)) AND substr(t.event_at,1,10) >= ?").get(uid, phoneStored, phoneStored, today))
     return { error: '입금이 확인된 대회 신청이 있어 탈퇴할 수 없습니다. 매장에 문의해 주세요.', code: 'HAS_PAID_ENTRY' };
   const mine = '(user_id=? OR (? <> \'\' AND phone=?))';
   db.exec('BEGIN');
   try {
-    db.prepare(`UPDATE entries SET status='CANCELED', cancel_reason='탈퇴', finished_at=datetime('now','localtime') WHERE status IN ${ACTIVE} AND ${mine}`).run(uid, phone, phone);
-    db.prepare(`UPDATE entries SET name='삭제됨', phone='', memo=NULL WHERE ${mine}`).run(uid, phone, phone);
-    const tids = db.prepare(`SELECT DISTINCT tournament_id t FROM tournament_entries WHERE status IN ('PENDING','CONFIRMED') AND ${mine}`).all(uid, phone, phone).map((r) => r.t);
-    db.prepare(`UPDATE tournament_entries SET status='DELETED', deleted_at=datetime('now','localtime'), delete_reason='탈퇴' WHERE status IN ('PENDING','WAITLIST') AND ${mine}`).run(uid, phone, phone);
-    db.prepare(`UPDATE tournament_entries SET name='삭제됨', phone='' WHERE ${mine}`).run(uid, phone, phone);
+    db.prepare(`UPDATE entries SET status='CANCELED', cancel_reason='탈퇴', finished_at=datetime('now','localtime') WHERE status IN ${ACTIVE} AND ${mine}`).run(uid, phoneStored, phoneStored);
+    db.prepare(`UPDATE entries SET name='삭제됨', phone='', memo=NULL WHERE ${mine}`).run(uid, phoneStored, phoneStored);
+    const tids = db.prepare(`SELECT DISTINCT tournament_id t FROM tournament_entries WHERE status IN ('PENDING','CONFIRMED') AND ${mine}`).all(uid, phoneStored, phoneStored).map((r) => r.t);
+    db.prepare(`UPDATE tournament_entries SET status='DELETED', deleted_at=datetime('now','localtime'), delete_reason='탈퇴' WHERE status IN ('PENDING','WAITLIST') AND ${mine}`).run(uid, phoneStored, phoneStored);
+    db.prepare(`UPDATE tournament_entries SET name='삭제됨', phone='' WHERE ${mine}`).run(uid, phoneStored, phoneStored);
     tids.forEach(promoteWaitlist); // 입금 대기가 빠지면 대기자가 올라간다
     if (member) { db.prepare('DELETE FROM member_change_log WHERE member_id=?').run(member.id); db.prepare('DELETE FROM members WHERE id=?').run(member.id); }
     if (user) {
@@ -941,7 +969,7 @@ async function handleAction(req, res, id, action) {
     const reason = String(b.reason || '').trim().slice(0, 200);
     if (!e.phone) return json(res, 400, { error: '전화번호가 없는 건은 블랙리스트에 올릴 수 없습니다.' });
     if (!reason) return json(res, 400, { error: '등록 사유를 입력하세요.' });
-    addBlacklist(e.phone, e.name, reason);
+    addBlacklist(dp(e.phone), e.name, reason);
     return json(res, 200, { ok: true });
   }
   if ((action === 'yield' || action === 'tail') && e) { // 순서 조정: 양보(한 칸 뒤로), 맨뒤로. 호출된 건이면 대기로 되돌린다
@@ -1103,16 +1131,16 @@ const tournamentView = (t, userId) => {
   };
 };
 const tournamentEntryView = (e) => ({
-  id: e.id, name: e.name, phone: e.phone, status: e.status, appliedAt: e.applied_at, paidAt: e.paid_at || '',
+  id: e.id, name: e.name, phone: maskPhone(dp(e.phone)), status: e.status, appliedAt: e.applied_at, paidAt: e.paid_at || '',
   deletedAt: e.deleted_at || '', deleteReason: e.delete_reason || '', refundMemo: e.refund_memo || '', manual: e.user_id === null,
 });
 // 신청 접수: 정원이 남아 있으면 입금 대기, 아니면 대기. 같은 번호의 중복 신청은 막는다
 const addTournamentEntry = (tid, userId, name, phone) => {
   const t = db.prepare('SELECT * FROM tournaments WHERE id=?').get(tid);
-  const dup = db.prepare("SELECT 1 FROM tournament_entries WHERE tournament_id=? AND (phone=? OR (? IS NOT NULL AND user_id=?)) AND status<>'DELETED'").get(tid, phone, userId, userId);
+  const dup = db.prepare("SELECT 1 FROM tournament_entries WHERE tournament_id=? AND (phone=? OR (? IS NOT NULL AND user_id=?)) AND status<>'DELETED'").get(tid, ep(phone), userId, userId);
   if (dup) return { code: 409, error: '이미 신청한 대회입니다.' };
   const status = seatsTaken(tid) < t.capacity ? 'PENDING' : 'WAITLIST';
-  db.prepare('INSERT INTO tournament_entries (tournament_id,user_id,name,phone,status) VALUES (?,?,?,?,?)').run(tid, userId, name, phone, status);
+  db.prepare('INSERT INTO tournament_entries (tournament_id,user_id,name,phone,status) VALUES (?,?,?,?,?)').run(tid, userId, name, ep(phone), status);
   return { status };
 };
 
@@ -1225,6 +1253,35 @@ async function handleTournaments(req, res, url) {
   return false;
 }
 
+// ---- 전화번호 암호화 이전: 아직 평문인 번호를 한 번에 암호화한다(다시 실행해도 안전) ----
+const encryptExistingPhones = () => {
+  db.exec('BEGIN');
+  try {
+    for (const t of ['entries', 'members', 'users', 'blacklist', 'tournament_entries', 'sms_codes']) {
+      const rows = db.prepare(`SELECT id, phone FROM ${t} WHERE phone IS NOT NULL AND phone <> '' AND phone NOT LIKE '${ENC_PREFIX}%'`).all();
+      const upd = db.prepare(`UPDATE ${t} SET phone=? WHERE id=?`);
+      rows.forEach((r) => upd.run(ep(r.phone), r.id));
+    }
+    db.exec('COMMIT');
+  } catch (err) { db.exec('ROLLBACK'); throw err; }
+};
+encryptExistingPhones();
+
+// ---- 정기 파기 (docs/privacy-retention-policy.md): 서버 시작 때와 하루에 한 번 실행한다 ----
+// 1년 지난 접수 기록의 이름·연락처·메모 익명화, 30일 지난 인증 코드·90일 지난 로그인 세션·기간 끝난 재가입 제한 삭제
+const purgeExpired = () => {
+  const day = 24 * 3600 * 1000;
+  const r = {
+    entries: db.prepare(`UPDATE entries SET name='삭제됨', phone='', memo=NULL WHERE status NOT IN ${ACTIVE}
+      AND date(created_at) < date('now','localtime','-1 year') AND (name <> '삭제됨' OR phone <> '' OR memo IS NOT NULL)`).run().changes,
+    smsCodes: db.prepare('DELETE FROM sms_codes WHERE created_at < ?').run(Date.now() - 30 * day).changes,
+    sessions: db.prepare("DELETE FROM user_sessions WHERE created_at < datetime('now','localtime','-90 days')").run().changes,
+    withdrawals: db.prepare("DELETE FROM withdrawals WHERE blocked_until <= datetime('now','localtime')").run().changes,
+  };
+  if (Object.values(r).some(Boolean)) console.log('정기 파기:', JSON.stringify(r));
+  return r;
+};
+
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
 
 const server = http.createServer(async (req, res) => {
@@ -1328,10 +1385,15 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  purgeExpired();
+  setInterval(purgeExpired, 24 * 3600 * 1000).unref();
   server.listen(PORT, () => {
     console.log(`http://localhost:${PORT}  (관리자: /admin)`);
     if (!process.env.ADMIN_PASSWORD) console.log('주의: 기본 관리자 비밀번호 사용 중. ADMIN_PASSWORD 환경변수를 설정하세요.');
   });
 }
 server.oauth = oauth;
+server.purgeExpired = purgeExpired;
+server.encryptExistingPhones = encryptExistingPhones;
+server.db = db;
 module.exports = server;

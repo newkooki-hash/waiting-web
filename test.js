@@ -138,7 +138,9 @@ mock.listen(0, () => server.listen(0, async () => {
     const list = (await call('GET', '/api/admin/entries')).body.entries;
     assert.equal(list.length, 1);
     assert.equal(list[0].name, '홍길동');
-    assert.equal(list[0].phone, '01011112222');
+    assert.equal(list[0].phone, '010-****-2222'); // 대기 현황은 마스킹
+    const rawPhone = (t, id) => server.db.prepare(`SELECT phone FROM ${t} WHERE id=?`).get(id).phone;
+    assert.ok(rawPhone('entries', list[0].id).startsWith('e1:') && !rawPhone('entries', list[0].id).includes('2222')); // 저장은 암호문
     const ida = list[0].id;
 
     assert.equal((await call('POST', `/api/admin/entries/${ida}/call`)).status, 200);
@@ -198,7 +200,7 @@ mock.listen(0, () => server.listen(0, async () => {
     const pos = (await call('GET', `/api/entries/${(await call('GET', '/api/me')).body.activeToken}`)).body;
     assert.ok(pos.position === 1 || pos.position === 2);
     // --- 블랙리스트 ---
-    const qrEntry = (await order()).find((e) => e.phone === '01011112222');
+    const qrEntry = (await order()).find((e) => e.phone === '010-****-2222');
     const noPhone = (await order()).find((e) => !e.phone);
     assert.equal((await call('POST', `/api/admin/entries/${noPhone.id}/blacklist`, { reason: '테스트' })).status, 400); // 번호 없음
     assert.equal((await call('POST', `/api/admin/entries/${qrEntry.id}/blacklist`, { reason: ' ' })).status, 400); // 사유 필수
@@ -260,12 +262,31 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(kim2.email, 'k**@example.com');
     assert.equal(kim2.age, new Date().getFullYear() - 1980);
     assert.equal((await members('?q=김이관')).total, 1);
-    assert.equal((await call('POST', '/api/admin/members/reveal', { id: kim2.id, password: 'wrong' })).status, 401);
-    const shown = await call('POST', '/api/admin/members/reveal', { id: kim2.id, password: 'pw' });
+    // 원문 조회: 사유 필수, 사유와 함께 기록
+    assert.equal((await call('POST', '/api/admin/reveal', { type: 'member', id: kim2.id })).status, 400);
+    assert.equal((await call('POST', '/api/admin/reveal', { type: 'member', id: kim2.id, reason: ' ' })).status, 400);
+    assert.equal((await call('POST', '/api/admin/reveal', { type: 'nope', id: 1, reason: '확인' })).status, 400);
+    const shown = await call('POST', '/api/admin/reveal', { type: 'member', id: kim2.id, reason: '분실물 연락' });
     assert.equal(shown.status, 200);
     assert.deepEqual(shown.body, { phone: '01022223333', email: 'kim@example.com' });
-    assert.equal((await call('POST', '/api/admin/members/reveal', { id: 99999, password: 'pw' })).status, 404);
-    assert.equal((await fetch(base + '/api/admin/members/reveal', { method: 'POST' })).status, 401);
+    assert.equal((await call('POST', '/api/admin/reveal', { type: 'member', id: 99999, reason: '확인' })).status, 404);
+    assert.equal((await fetch(base + '/api/admin/reveal', { method: 'POST' })).status, 401);
+    const logged = server.db.prepare("SELECT target, member_id, reason FROM pii_view_log WHERE reason='분실물 연락'").all();
+    assert.deepEqual(logged.map((l) => ({ ...l })), [{ target: 'member', member_id: kim2.id, reason: '분실물 연락' }]);
+    assert.ok(server.db.prepare('SELECT phone FROM members WHERE id=?').get(kim2.id).phone.startsWith('e1:'));
+    const histRow = (await call('GET', '/api/admin/history?from=2000-01-01&to=2999-12-31')).body.entries[0];
+    assert.match(histRow.phone, /^010-\*{4}-\d{4}$/); // 이력도 마스킹
+    const shownEntry = await call('POST', '/api/admin/reveal', { type: 'entry', id: histRow.id, reason: '미결제 확인' });
+    assert.match(shownEntry.body.phone, /^01\d{8,9}$/);
+    // 정기 파기와 암호화 이전
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,memo) VALUES ('old1','옛손님','01077778888',2,'ASSIGNED',datetime('now','localtime','-400 days'),'메모')").run();
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status) VALUES ('legacy1','평문손님','01099991111',1,'CANCELED')").run(); // 암호화 이전 평문 행
+    server.encryptExistingPhones();
+    assert.ok(server.db.prepare("SELECT phone FROM entries WHERE token='legacy1'").get().phone.startsWith('e1:'));
+    assert.equal((await call('GET', '/api/admin/history?from=2000-01-01&to=2999-12-31&q=01099991111')).body.entries.length, 1); // 전체 번호로 찾기
+    assert.equal(server.purgeExpired().entries, 1);
+    assert.deepEqual({ ...server.db.prepare("SELECT name, phone, memo FROM entries WHERE token='old1'").get() }, { name: '삭제됨', phone: '', memo: null });
+    assert.equal(server.purgeExpired().entries, 0); // 다시 실행해도 변화 없음
     // --- 정기 대회 신청 ---
     const ts = (min) => new Date(Date.now() + min * 60000).toLocaleString('sv').slice(0, 16);
     const tour = (b) => call('POST', '/api/admin/tournaments', { name: '11월 챔프전', eventAt: ts(60 * 24 * 7), applyStart: ts(-60), applyEnd: ts(60), capacity: 2, fee: 30000, info: '국민 000', ...b });
@@ -549,12 +570,12 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await findMember('01055550001')).total, 0); // 회원 삭제
     assert.equal((await call('GET', `/api/admin/members/log?id=${wm.id}`)).body.entries.length, 0); // 변경 이력도 삭제
     const gone = (await call('GET', '/api/admin/history?from=2000-01-01&to=2999-12-31')).body.entries;
-    assert.equal(gone.filter((e) => e.phone === '01055550001').length, 0);
+    assert.equal(gone.filter((e) => e.phone === '010-****-0001').length, 0);
     const anon = gone.find((e) => e.name === '삭제됨' && e.cancelReason === '탈퇴'); // 대기 중이던 접수는 취소되고 익명화
     assert.ok(anon && anon.status === 'CANCELED' && anon.phone === '');
     assert.equal((await call('GET', `/api/admin/tournaments/${wt}/entries`)).body.entries[0].name, '삭제됨');
     assert.equal((await call('GET', `/api/entries/${wEntry}`)).body.name, '삭제됨');
-    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.some((b) => b.phone === '01066660000'), true); // 블랙리스트는 유지
+    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.some((b) => b.phone === '010-****-0000'), true); // 블랙리스트는 유지
     // 재가입 제한: 같은 소셜 계정, 같은 번호
     assert.equal((await call('GET', '/auth/kakao', null, { raw: true })).status, 302);
     mockId = 5001; await call('POST', '/api/logout');
@@ -576,7 +597,7 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await fetch(base + '/api/admin/members/delete', { method: 'POST' })).status, 401);
     assert.equal((await call('POST', '/api/admin/members/delete', { id: im.id })).status, 200);
     assert.equal((await findMember('01066660000')).total, 0);
-    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.some((b) => b.phone === '01066660000'), true); // 블랙리스트는 그대로
+    assert.equal((await call('GET', '/api/admin/blacklist')).body.entries.some((b) => b.phone === '010-****-0000'), true); // 블랙리스트는 그대로
     assert.equal((await call('POST', '/api/admin/withdrawals/lift', { phone: '01066660000' })).status, 200); // 관리자 삭제도 제한이 걸려 있었다
     // --- 관리자 로그인 시도 제한: 5회 실패하면 올바른 비밀번호도 막는다 ---
     for (let i = 0; i < 5; i++) assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'bad' })).status, 401);

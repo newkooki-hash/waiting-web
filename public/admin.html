@@ -107,6 +107,7 @@
   .qline .nm .chev { color:var(--muted); transition:transform .15s; }
   .q.sel .nm .chev { transform:rotate(90deg); color:var(--blue); }
   .qline .phone { font-family:ui-monospace,Consolas,monospace; color:var(--muted); }
+  a.rv { color:inherit; text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer; }
   .qline .badge { margin-left:0; }
   .qline .nmtxt { display:flex; flex-direction:column; min-width:0; }
   .qline .nmline { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -439,7 +440,7 @@
       <dialog id="revealDlg">
         <form method="dialog" id="revealForm" style="display:grid;gap:10px;min-width:260px">
           <strong>원문 보기</strong>
-          <input type="password" id="revealPw" placeholder="관리자 비밀번호" autocomplete="current-password" required>
+          <input type="text" id="revealReason" placeholder="조회 사유 (예: 분실물 연락, 미결제 확인)" maxlength="100" autocomplete="off" required>
           <div id="revealOut" role="status"></div>
           <div class="err" id="revealErr" role="alert"></div>
           <div class="actions"><button type="button" id="revealClose">닫기</button><button class="primary" id="revealGo">확인</button></div>
@@ -775,7 +776,7 @@ async function loadTournamentEntries() {
     const num = e.status === 'DELETED' ? '' : ++n;
     const memo = e.status === 'DELETED' ? [e.deleteReason, e.refundMemo && '환불: ' + e.refundMemo].filter(Boolean).join(' / ') : '';
     return `<tr data-id="${e.id}" data-memo="${esc(e.refundMemo)}" style="${e.status === 'DELETED' ? 'opacity:.55' : ''}">
-      <td>${num}</td><td><strong>${esc(e.name)}</strong>${e.manual ? ' <span class="badge WAITING">대리</span>' : ''}</td><td>${esc(e.phone)}</td>
+      <td>${num}</td><td><strong>${esc(e.name)}</strong>${e.manual ? ' <span class="badge WAITING">대리</span>' : ''}</td><td>${rv('tournament', e.id, e.phone)}</td>
       <td>${T_STATUS[e.status]}${e.paidAt ? `<div class="meta">입금 ${esc(e.paidAt.slice(5, 16))}</div>` : ''}</td>
       <td>${esc(e.appliedAt.slice(5, 16))}</td><td>${esc(memo)}</td>
       <td class="actions">${e.status === 'PENDING' ? '<button class="primary" data-te="confirm">입금 확인</button>' : ''}${e.status === 'CONFIRMED' ? '<button data-te="unconfirm">입금 취소</button>' : ''}${e.status !== 'DELETED' ? '<button class="danger" data-te="delete">삭제</button>' : '<button data-te="memo">환불 메모</button>'}</td></tr>`;
@@ -812,7 +813,7 @@ $('tAdd').addEventListener('submit', async (ev) => {
 });
 
 // 회원관리
-let mPage = 1, mLast = 1, revealId;
+let mPage = 1, mLast = 1;
 async function loadMembers() {
   const r = await fetch('/api/admin/members?' + new URLSearchParams({ q: $('mQ').value, page: mPage }));
   if (!r.ok) return;
@@ -820,8 +821,8 @@ async function loadMembers() {
   mLast = Math.max(1, Math.ceil(total / size));
   $('mRows').innerHTML = entries.length ? entries.map((m) => `
     <tr data-id="${m.id}"><td><strong>${esc(m.name)}</strong></td><td>${m.age ?? ''}</td><td>${esc(m.gender)}</td>
-    <td>${esc(m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td><td>${esc(m.lastUsedAt) || '-'}</td>
-    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button data-m="reveal">원문</button><button class="danger" data-m="delete">삭제</button><button data-m="log">이력</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
+    <td>${rv('member', m.id, m.phone)}</td><td>${esc(m.email)}</td><td>${esc(m.joinedAt)}</td><td>${esc(m.lastUsedAt) || '-'}</td>
+    <td>${esc(m.source)}${m.linked ? ' · 연결' : ''}<div class="meta"><strong>${esc(m.tier)}</strong></div></td><td class="actions"><button class="danger" data-m="delete">삭제</button><button data-m="log">이력</button><button data-m="tier" data-tier="${m.tier === '정회원' ? '일반' : '정회원'}">${m.tier === '정회원' ? '일반으로' : '정회원 지정'}</button></td></tr>`).join('')
     : '<tr><td colspan="9" class="empty" style="border:0">회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</td></tr>';
   $('mPage').textContent = `${mPage} / ${mLast}쪽 · 총 ${total}명`;
   $('mPrev').disabled = mPage <= 1; $('mNext').disabled = mPage >= mLast;
@@ -857,19 +858,28 @@ $('mRows').addEventListener('click', (ev) => {
     if (!confirm(to === '정회원' ? '본인 확인을 마친 회원을 정회원으로 지정할까요? 정회원은 대회에 신청할 수 있습니다.' : '일반회원으로 되돌릴까요?')) return;
     return post('/api/admin/members/tier', { id: Number(btn.closest('tr').dataset.id), tier: to }).then(loadMembers);
   }
-  revealId = Number(btn.closest('tr').dataset.id);
-  $('revealPw').value = ''; $('revealOut').textContent = ''; $('revealErr').textContent = ''; $('revealGo').hidden = false;
-  $('revealDlg').showModal();
 });
 $('logClose').onclick = () => $('logDlg').close();
 $('revealClose').onclick = () => { $('revealOut').textContent = ''; $('revealDlg').close(); };
+// 원문 보기: 마스킹된 번호를 누르면 조회 사유를 묻고, 사유와 함께 기록한 뒤 닫기 전까지만 보여 준다
+const rv = (type, id, masked) => (masked ? `<a href="#" class="rv" data-rv="${type}:${id}" title="누르면 원문 조회(사유 입력)">${esc(masked)}</a>` : '');
+let revealTarget;
+document.addEventListener('click', (ev) => {
+  const a = ev.target.closest('a.rv');
+  if (!a) return;
+  ev.preventDefault(); ev.stopPropagation(); // 대기 줄 선택 등 다른 클릭 동작을 막는다
+  const [type, id] = a.dataset.rv.split(':');
+  revealTarget = { type, id: Number(id) };
+  $('revealReason').value = ''; $('revealOut').textContent = ''; $('revealErr').textContent = ''; $('revealGo').hidden = false;
+  $('revealDlg').showModal();
+}, true);
 $('revealForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const r = await post('/api/admin/members/reveal', { id: revealId, password: $('revealPw').value });
-  $('revealPw').value = '';
+  const r = await post('/api/admin/reveal', { ...revealTarget, reason: $('revealReason').value });
   if (!r.ok) return ($('revealErr').textContent = r.body.error || '조회에 실패했습니다.');
   $('revealErr').textContent = '';
-  $('revealOut').textContent = `${r.body.phone}  ${r.body.email}`;
+  $('revealOut').textContent = `${r.body.phone}  ${r.body.email}`.trim();
+  $('revealReason').value = '';
   $('revealGo').hidden = true; // 닫기 전까지만 보인다
 });
 $('mImport').onclick = async () => {
@@ -899,7 +909,7 @@ async function loadBlacklist() {
   if (!r.ok) return;
   const { entries } = await r.json();
   $('bRows').innerHTML = entries.length ? entries.map((b) => `
-    <tr data-id="${b.id}"><td><strong>${esc(b.name || '')}</strong></td><td>${esc(b.phone)}</td><td>${esc(b.reason)}</td>
+    <tr data-id="${b.id}"><td><strong>${esc(b.name || '')}</strong></td><td>${rv('blacklist', b.id, b.phone)}</td><td>${esc(b.reason)}</td>
     <td>${esc(b.createdAt.slice(0, 10))}</td><td><button data-b="remove">해제</button></td></tr>`).join('')
     : '<tr><td colspan="5" class="empty" style="border:0">등록된 번호가 없습니다.</td></tr>';
 }
@@ -926,7 +936,7 @@ async function loadHistory() {
   if (!r.ok) return;
   const { entries } = await r.json();
   $('hRows').innerHTML = entries.length ? entries.map((e) => `
-    <tr><td>${esc(e.createdAt.slice(5, 16))}</td><td><strong>${esc(e.name)}</strong></td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+    <tr><td>${esc(e.createdAt.slice(5, 16))}</td><td><strong>${esc(e.name)}</strong></td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명</td>
     <td>${STATUS[e.status]}</td><td>${esc(e.lanes)}</td><td>${e.waitMin === '' ? '' : e.waitMin + '분'}</td>
     <td>${e.manual ? '수기' : 'QR'}</td><td>${esc([e.memo, e.cancelReason && '취소: ' + e.cancelReason].filter(Boolean).join(' / '))}</td></tr>`).join('')
     : '<tr><td colspan="9" class="empty" style="border:0">조건에 맞는 이력이 없습니다.</td></tr>';
@@ -1026,11 +1036,11 @@ async function load() {
         <div class="time">${esc(e.createdAt.slice(11, 16))}</div>
         <div class="nm"><span class="chev">›</span><span class="nmtxt">
           <span class="nmline">${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</span>
-          <small class="nmeta">${esc(e.createdAt.slice(11, 16))}${e.phone ? ' · ' + esc(e.phone) : ''}</small>
+          <small class="nmeta">${esc(e.createdAt.slice(11, 16))}${e.phone ? ' · ' + rv('entry', e.id, e.phone) : ''}</small>
           ${e.memo ? `<small class="nmemo">${esc(e.memo)}</small>` : ''}
         </span></div>
         <div>${e.partySize}명</div>
-        <div class="phone">${esc(e.phone) || '—'}</div>
+        <div class="phone">${rv('entry', e.id, e.phone) || '—'}</div>
         <div class="cmemo">${esc(e.memo) || '—'}</div>
       </div>
       ${e.id === selectedId ? `<div class="qact">${actions(e)}</div>` : ''}
@@ -1038,7 +1048,7 @@ async function load() {
 
   $('done').innerHTML = done.length ? done.map((e) => `
     <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}" data-lanes="${esc(e.lanes)}">
-      <td><strong>${esc(e.name)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</td><td>${esc(e.phone)}</td><td>${e.partySize}명</td>
+      <td><strong>${esc(e.name)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명</td>
       <td><span class="lanechip">${esc(e.lanes)}번</span></td>
       <td>${esc((e.assignedAt || '').slice(11, 16))}</td>
       <td class="actions"><button data-act="relane">레인 변경</button><button data-act="edit">수정</button><button class="danger" data-act="cancel">배정 취소</button></td>
