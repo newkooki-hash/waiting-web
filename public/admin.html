@@ -4,25 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>오란다 볼링 관리자</title>
+<link rel="stylesheet" href="/theme.css">
 <style>
-  /* 레인 오일의 청록 + 핀 화이트 + 호출 앰버. 카운터에서 멀리서도 읽히는 큰 숫자와 큰 버튼이 기준 */
-  :root {
-    --bg:#eef1f3; --card:#fff; --text:#16222b; --muted:#667784; --line:#dbe2e7;
-    --ink:#0f2b36; --ink-text:#e8f1f4; --ink-muted:#8fb0bc;
-    --accent:#0b7a75; --accent-ink:#fff; --accent-soft:#dff3f1;
-    --call:#c76a00; --call-soft:#fff0d9; --ok:#2b8a3e; --ok-soft:#e1f4e5; --bad:#cf2f2f;
-    --radius:10px;
-    --blue:#2563eb; --blue-soft:#eff6ff; --blue-ink:#1d4ed8;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg:#0d151a; --card:#162128;--text:#e6eef2; --muted:#8a9ba6; --line:#26353f;
-      --ink:#08181f; --ink-text:#e8f1f4; --ink-muted:#7a9aa6;
-      --accent:#35c2b9; --accent-ink:#06201f; --accent-soft:#12383a;
-      --call:#ffb347; --call-soft:#3a2b10; --ok:#69db7c; --ok-soft:#173222; --bad:#ff6b6b;
-      --blue:#2f5fd0; --blue-soft:#14233f; --blue-ink:#8db1ff;
-    }
-  }
+  /* 색상은 /theme.css 공통 토큰: 청록=대기, 앰버=호출, 파랑=배정 완료, 빨강=취소. 카운터에서 멀리서도 읽히는 큰 숫자와 큰 버튼이 기준 */
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,"Malgun Gothic","Apple SD Gothic Neo",sans-serif; font-variant-numeric:tabular-nums; }
   [hidden] { display:none !important; }
@@ -75,6 +59,8 @@
   .badge { display:inline-block; padding:1px 9px; border-radius:99px; font-size:.78rem; font-weight:700; margin-left:6px; vertical-align:middle; }
   .badge.WAITING { background:var(--accent-soft); color:var(--accent); }
   .badge.CALLED { background:var(--call-soft); color:var(--call); }
+  .badge.ASSIGNED, .badge.FINISHED { background:var(--done-soft); color:var(--done); }
+  .badge.CANCELED { background:var(--bad-soft); color:var(--bad); }
   .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
   .actions input { width:110px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,.05); }
@@ -86,28 +72,33 @@
   .cardhd .grow { flex:1; }
   .cardhd button { border-radius:99px; min-height:36px; padding:6px 16px; }
   .done { margin-bottom:20px; background:var(--bg); }
+  .done > summary { background:var(--done); color:var(--done-ink); }
+  .done > summary .ico { background:rgba(255,255,255,.22); }
+  .done > summary button { background:var(--done-ink); color:var(--done); border-color:var(--done-ink); }
   .done > summary { list-style:none; cursor:pointer; }
   .done > summary::-webkit-details-marker { display:none; }
   .done .chev { display:inline-block; transition:transform .15s; margin-left:6px; opacity:.6; }
   .done[open] .chev { transform:rotate(180deg); }
   .done .wrap { margin:0 16px 16px; }
-  .waitcard .cardhd { background:var(--blue); color:#fff; }
-  .waitcard .cardhd .ico { background:rgba(255,255,255,.2); }
-  .waitcard .cardhd button { background:#fff; color:var(--blue); border-color:#fff; }
-  #manual { margin:0; border:0; border-bottom:1px solid var(--line); border-radius:0; background:var(--blue-soft); }
+  .waitcard .cardhd { background:var(--accent); color:var(--accent-ink); }
+  .waitcard .cardhd .ico { background:rgba(255,255,255,.22); }
+  .waitcard .cardhd button { background:var(--accent-ink); color:var(--accent); border-color:var(--accent-ink); }
+  #manual { margin:0; border:0; border-bottom:1px solid var(--line); border-radius:0; background:var(--accent-soft); }
   .qhead, .qline { display:grid; grid-template-columns:72px 100px minmax(170px,1.6fr) 90px minmax(140px,1.2fr) minmax(100px,1.4fr); gap:12px; align-items:center; padding:0 24px; }
-  .qhead { background:var(--blue-soft); color:var(--blue-ink); font-weight:700; font-size:.92rem; min-height:48px; }
+  .qhead { background:var(--accent-soft); color:var(--accent); font-weight:700; font-size:.92rem; min-height:48px; }
   .q { border-top:1px solid var(--line); }
-  .q.sel { background:var(--blue-soft); }
+  .q.sel { background:var(--accent-soft); }
+  .q.CALLED { box-shadow:inset 4px 0 0 var(--call); }
   .qline { min-height:64px; cursor:pointer; }
-  .qline:hover { background:var(--blue-soft); }
-  .qline .no { width:34px; height:34px; border-radius:50%; background:var(--blue); color:#fff; display:grid; place-items:center; font-weight:700; }
+  .qline:hover { background:var(--accent-soft); }
+  .qline .no { width:34px; height:34px; border-radius:50%; background:var(--accent); color:var(--accent-ink); display:grid; place-items:center; font-weight:700; }
   .qline .time { font-family:ui-monospace,Consolas,monospace; font-weight:700; }
   .qline .nm { font-weight:600; font-size:1.05rem; display:flex; align-items:center; gap:6px; min-width:0; }
   .qline .nm .chev { color:var(--muted); transition:transform .15s; }
-  .q.sel .nm .chev { transform:rotate(90deg); color:var(--blue); }
+  .q.sel .nm .chev { transform:rotate(90deg); color:var(--accent); }
+  .q.CALLED .no { background:var(--call); color:#fff; }
   .qline .phone { font-family:ui-monospace,Consolas,monospace; color:var(--muted); }
-  .visits { font-size:12px; color:var(--muted); margin-left:6px; white-space:nowrap; }
+  .qline .visits { display:block; font-size:.78rem; font-weight:400; color:var(--muted); white-space:nowrap; }
   a.rv { color:inherit; text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer; }
   .qline .badge { margin-left:0; }
   .qline .nmtxt { display:flex; flex-direction:column; min-width:0; }
@@ -129,11 +120,14 @@
     .qline .nmeta { display:block; }
     .cardhd { padding:14px 16px; flex-wrap:wrap; }
   }
-  .qact { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 24px; background:var(--ok-soft); border-top:1px solid var(--line); justify-content:flex-start; }
-  .qact .who { font-size:.95rem; color:var(--ok); padding-right:6px; }
+  .qact { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 24px; background:var(--accent-soft); border-top:1px solid var(--line); justify-content:flex-start; }
+  .qact .who { font-size:.95rem; color:var(--accent); padding-right:6px; }
   .qact .sep { width:1px; align-self:stretch; background:var(--line); margin:0 6px; }
-  .qact button { border:0; color:#fff; border-radius:8px; min-height:36px; }
-  .qact .t { background:#14b8a6; } .qact .p { background:#818cf8; } .qact .y { background:#fbbf24; color:#3b2a00; } .qact .d { background:#374151; }
+  .qact button { border-radius:8px; min-height:36px; background:var(--card); }
+  .qact .go { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+  .qact .ring { background:var(--call); border-color:var(--call); color:#fff; }
+  .qact .edit { color:var(--done); border-color:var(--done); }
+  .qact .d { color:var(--bad); border-color:var(--bad); }
   .empty { padding:40px 16px; text-align:center; color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:var(--radius); }
 
   /* 행사 캘린더 */
@@ -163,7 +157,7 @@
   th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--line); }
   tr:last-child td { border-bottom:0; }
   th { font-size:.82rem; color:var(--muted); font-weight:600; }
-  .lanechip { display:inline-block; padding:2px 12px; border-radius:99px; background:var(--ok-soft); color:var(--ok); font-weight:700; }
+  .lanechip { display:inline-block; padding:2px 12px; border-radius:99px; background:var(--done-soft); color:var(--done); font-weight:700; }
 
   /* 접수 설정 */
   .settings { display:grid; grid-template-columns:260px 1fr; gap:16px; align-items:start; }
@@ -939,7 +933,7 @@ async function loadHistory() {
   const { entries } = await r.json();
   $('hRows').innerHTML = entries.length ? entries.map((e) => `
     <tr><td>${esc(e.createdAt.slice(5, 16))}</td><td><strong>${esc(e.name)}</strong></td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명</td><td>${e.shoes === '' ? '-' : e.shoes}</td>
-    <td>${STATUS[e.status]}</td><td>${esc(e.lanes)}</td><td>${e.waitMin === '' ? '' : e.waitMin + '분'}</td>
+    <td><span class="badge ${e.status}" style="margin-left:0">${STATUS[e.status]}</span></td><td>${esc(e.lanes)}</td><td>${e.waitMin === '' ? '' : e.waitMin + '분'}</td>
     <td>${e.manual ? '수기' : 'QR'}</td><td>${esc([e.memo, e.cancelReason && '취소: ' + e.cancelReason].filter(Boolean).join(' / '))}</td></tr>`).join('')
     : '<tr><td colspan="10" class="empty" style="border:0">조건에 맞는 이력이 없습니다.</td></tr>';
   $('hCount').textContent = `${entries.length}건` + (entries.length >= 2000 ? ' (최대 2000건까지 표시)' : '');
@@ -1038,7 +1032,8 @@ async function load() {
         <div><span class="no">${i + 1}</span></div>
         <div class="time">${esc(e.createdAt.slice(11, 16))}</div>
         <div class="nm"><span class="chev">›</span><span class="nmtxt">
-          <span class="nmline">${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}${e.visits === null ? '' : `<span class="visits" title="최근 ${visitMonths}개월 동안 레인 배정을 받은 날 수">${visitMonths}개월 ${e.visits ? e.visits + '회' : '첫 방문'}</span>`}</span>
+          <span class="nmline">${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</span>
+          ${e.visits === null ? '' : `<span class="visits" title="최근 ${visitMonths}개월 동안 레인 배정을 받은 날 수">${visitMonths}개월 ${e.visits ? e.visits + '회 방문' : '첫 방문'}</span>`}
           <small class="nmeta">${esc(e.createdAt.slice(11, 16))}${e.phone ? ' · ' + rv('entry', e.id, e.phone) : ''}</small>
           ${e.memo ? `<small class="nmemo">${esc(e.memo)}</small>` : ''}
         </span></div>
@@ -1060,15 +1055,15 @@ async function load() {
 
 function actions(e) {
   return `<strong class="who">👤 ${esc(e.name)}</strong><span class="sep"></span>
-    ${e.status === 'WAITING' ? '<button class="t" data-act="call">호출</button>' : ''}
-    <button class="t" data-act="assign">레인배정</button>
-    <button class="t" data-act="yield" title="한 칸 뒤로">양보하기</button>
-    <button class="t" data-act="tail">맨뒤로보내기</button>
-    <button class="t" data-act="cancel">대기취소</button>
+    ${e.status === 'WAITING' ? '<button class="ring" data-act="call">호출</button>' : ''}
+    <button class="go" data-act="assign">레인배정</button>
+    <button data-act="yield" title="한 칸 뒤로">양보하기</button>
+    <button data-act="tail">맨뒤로보내기</button>
+    <button data-act="cancel">대기취소</button>
     <span class="sep"></span>
-    <button class="p" data-act="edit-party">인원수정</button>
-    <button class="p" data-act="edit-shoes">신발수정</button>
-    <button class="y" data-act="edit-memo">메모설정</button>
+    <button class="edit" data-act="edit-party">인원수정</button>
+    <button class="edit" data-act="edit-shoes">신발수정</button>
+    <button class="edit" data-act="edit-memo">메모설정</button>
     <span class="sep"></span>
     <button class="d" data-act="blacklist">블랙리스트</button>`;
 }

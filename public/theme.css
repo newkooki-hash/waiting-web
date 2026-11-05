@@ -1,0 +1,28 @@
+/* 오란다 볼링 공통 색상. 관리자·손님 화면이 함께 쓴다.
+   레인 오일의 청록(대기·브랜드) · 호출 앰버 · 배정 파랑(배정 완료) · 취소 빨강, 헤더는 짙은 잉크색.
+   상태마다 색이 정해져 있으니 화면을 추가할 때도 같은 색을 쓴다. */
+:root {
+  --bg:#eef1f3; --card:#fff; --text:#16222b; --muted:#667784; --line:#dbe2e7;
+  --ink:#0f2b36; --ink-text:#e8f1f4; --ink-muted:#8fb0bc;
+  --accent:#0b7a75; --accent-ink:#fff; --accent-soft:#dff3f1;      /* 대기·브랜드 */
+  --call:#b85f00; --call-soft:#fff0d9;                            /* 호출 */
+  --done:#3558c9; --done-ink:#fff; --done-soft:#e8edfb;           /* 배정 완료 */
+  --ok:#2b8a3e; --ok-soft:#e1f4e5;                                /* 켜짐·성공 */
+  --bad:#cf2f2f; --bad-soft:#fdeaea;                              /* 취소·오류 */
+  --radius:10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0d151a; --card:#162128; --text:#e6eef2; --muted:#8a9ba6; --line:#26353f;
+    --ink:#08181f; --ink-text:#e8f1f4; --ink-muted:#7a9aa6;
+    --accent:#35c2b9; --accent-ink:#06201f; --accent-soft:#12383a;
+    --call:#ffb347; --call-soft:#3a2b10;
+    --done:#7d9bf2; --done-ink:#0b1633; --done-soft:#17234a;
+    --ok:#69db7c; --ok-soft:#173222;
+    --bad:#ff6b6b; --bad-soft:#3b1a1a;
+  }
+}
+
+/* 손님 화면 상단 띠: 관리자 헤더와 같은 잉크색으로 한 브랜드로 보이게 한다 */
+.brandbar { background:var(--ink); color:var(--ink-text); padding:14px 16px; font-weight:700; letter-spacing:-.01em; }
+.brandbar span { display:block; max-width:420px; margin:0 auto; }

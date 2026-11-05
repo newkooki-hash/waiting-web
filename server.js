@@ -1313,7 +1313,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   // ADMIN_HOST가 있으면 관리자 호스트는 관리자 화면·API만, 그 외 호스트는 관리자 경로를 막는다.
   if (ADMIN_HOST) {
-    const isAdminPath = /^\/(admin(\.html)?|qrcode\.js|api\/admin\/.*)$/.test(url.pathname);
+    const isAdminPath = /^\/(admin(\.html)?|qrcode\.js|theme\.css|api\/admin\/.*)$/.test(url.pathname);
     const onAdminHost = (req.headers.host || '').split(':')[0] === ADMIN_HOST;
     if (onAdminHost) {
       if (url.pathname === '/') url.pathname = '/admin';

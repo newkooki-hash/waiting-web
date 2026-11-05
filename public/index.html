@@ -5,11 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="naver-site-verification" content="8349e9d540e282f98754044c89a42f62a2078ccf" />
 <title>오란다 볼링 대기 접수</title>
+<link rel="stylesheet" href="/theme.css">
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --accent:#d9480f; --line:#e5e7eb; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#14161a; --card:#1e2127; --text:#eceef1; --muted:#9aa1ad; --accent:#ff7a3d; --line:#2e333b; }
-  }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,"Malgun Gothic",sans-serif; }
   main { max-width:420px; margin:0 auto; padding:24px 16px; }
@@ -17,7 +14,7 @@
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
   label { display:block; font-size:.9rem; color:var(--muted); margin:14px 0 4px; }
   input, select { width:100%; padding:12px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
-  button { width:100%; margin-top:20px; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button { width:100%; margin-top:20px; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:8px; background:var(--accent); color:var(--accent-ink); cursor:pointer; }
   button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); margin-top:12px; }
   .sso { display:block; text-align:center; text-decoration:none; padding:14px; margin-top:10px; border-radius:8px; font-weight:600; }
   .sso.kakao { background:#fee500; color:#191919; }
@@ -25,15 +22,16 @@
   label.chk { display:flex; gap:10px; align-items:center; color:var(--text); font-size:.95rem; margin:12px 0 0; }
   label.chk input { width:20px; height:20px; flex:none; }
   #userbar[hidden] { display:none; }
-  .err { color:#d92d20; margin-top:12px; min-height:1.4em; }
+  .err { color:var(--bad); margin-top:12px; min-height:1.4em; }
   .big { font-size:3rem; font-weight:700; text-align:center; margin:8px 0; }
   .center { text-align:center; }
   .muted { color:var(--muted); }
-  .called { color:var(--accent); }
+  .called { color:var(--call); }
   [hidden] { display:none !important; }
 </style>
 </head>
 <body>
+<div class="brandbar"><span>오란다 볼링파크</span></div>
 <main>
   <h1>오란다 볼링 대기 접수</h1>
   <div id="banners" style="display:grid;gap:8px;margin-bottom:16px"></div>
