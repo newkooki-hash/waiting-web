@@ -80,6 +80,11 @@
     <div class="muted" id="phoneShown" style="margin-top:14px"></div>
     <label for="party">인원 (최대 8명)</label>
     <select id="party"></select>
+    <label for="shoes">신발 대여 인원</label>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="shoes" style="flex:1"></select>
+      <button type="button" id="noShoes" class="ghost" style="width:auto;white-space:nowrap">전체 대여 안함</button>
+    </div>
     <button type="submit">대기 접수</button>
     <div id="err" class="err" role="alert"></div>
   </form>
@@ -105,6 +110,18 @@ const store = {
 let token = store.get();
 
 $('party').innerHTML = Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}">${i + 1}명</option>`).join('');
+let partyTouched = false, shoesTouched = false; // 손님이 직접 고른 뒤에는 기본값으로 덮어쓰지 않는다
+// 신발 대여 인원: 직접 고르기 전에는 인원과 함께 늘고, 고른 뒤에는 인원을 넘지 않게만 줄인다
+function drawShoes(want) {
+  const p = Number($('party').value);
+  const v = Math.min(want ?? (shoesTouched ? Number($('shoes').value) : p), p);
+  $('shoes').innerHTML = Array.from({ length: p + 1 }, (_, i) => `<option value="${i}">${i === 0 ? '대여 안함' : i + '명'}</option>`).join('');
+  $('shoes').value = v;
+}
+$('party').addEventListener('change', () => { partyTouched = true; drawShoes(); });
+$('shoes').addEventListener('change', () => { shoesTouched = true; });
+$('noShoes').addEventListener('click', () => { shoesTouched = true; drawShoes(0); });
+drawShoes();
 
 let me = { user: null, providers: [] };
 async function loadMe() {
@@ -138,6 +155,7 @@ function showForm() {
   $('userbar').hidden = !logged;
   if (logged) {
     $('me').textContent = me.user.name + '님'; if (!$('name').value) $('name').value = me.user.name;
+    if (me.last && !partyTouched) { $('party').value = me.last.party; drawShoes(me.last.shoes ?? undefined); } // 지난 접수 값을 기본으로
     $('phoneShown').textContent = verified ? '인증된 번호: ' + me.user.phone : '';
   }
   else {
@@ -155,7 +173,7 @@ async function refresh() {
   if (!r.ok) { store.clear(); token = null; return showForm(); }
   const e = await r.json();
   $('form').hidden = true; $('status').hidden = false;
-  $('who').textContent = `${e.name}님 · ${e.partySize}명`;
+  $('who').textContent = `${e.name}님 · ${e.partySize}명` + (e.shoes === null ? '' : e.shoes ? ` · 신발 ${e.shoes}명` : ' · 신발 대여 안함');
   const main = $('main'), sub = $('sub');
   main.className = 'big';
   $('cancel').hidden = !(e.status === 'WAITING' || e.status === 'CALLED');
@@ -183,7 +201,7 @@ $('form').addEventListener('submit', async (ev) => {
   $('err').textContent = '';
   const r = await fetch('/api/entries', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: $('name').value, partySize: Number($('party').value) }),
+    body: JSON.stringify({ name: $('name').value, partySize: Number($('party').value), shoes: Number($('shoes').value) }),
   });
   const b = await r.json();
   if (r.status === 403 && b.code === 'PHONE_REQUIRED') { await loadMe(); return showForm(); }

@@ -107,6 +107,7 @@
   .qline .nm .chev { color:var(--muted); transition:transform .15s; }
   .q.sel .nm .chev { transform:rotate(90deg); color:var(--blue); }
   .qline .phone { font-family:ui-monospace,Consolas,monospace; color:var(--muted); }
+  .visits { font-size:12px; color:var(--muted); margin-left:6px; white-space:nowrap; }
   a.rv { color:inherit; text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer; }
   .qline .badge { margin-left:0; }
   .qline .nmtxt { display:flex; flex-direction:column; min-width:0; }
@@ -256,6 +257,7 @@
           <input type="text" id="mName" placeholder="이름" maxlength="20" required style="width:120px">
           <input type="text" id="mPhone" placeholder="전화 (선택)" inputmode="numeric" style="width:150px">
           <input type="text" id="mParty" placeholder="인원" inputmode="numeric" required style="width:70px">
+          <input type="text" id="mShoes" placeholder="신발 (선택)" inputmode="numeric" title="신발 대여 인원. 비워 두면 미확인" style="width:90px">
           <input type="text" id="mMemo" placeholder="메모 (선택)" maxlength="200" style="width:180px">
           <button class="primary">등록</button>
         </form>
@@ -278,7 +280,7 @@
         <button type="button" id="hCsv">엑셀(CSV) 내려받기</button>
       </form>
       <div class="wrap"><table>
-        <thead><tr><th>접수</th><th>이름</th><th>전화</th><th>인원</th><th>상태</th><th>레인</th><th>대기</th><th>경로</th><th>메모·사유</th></tr></thead>
+        <thead><tr><th>접수</th><th>이름</th><th>전화</th><th>인원</th><th>신발</th><th>상태</th><th>레인</th><th>대기</th><th>경로</th><th>메모·사유</th></tr></thead>
         <tbody id="hRows"></tbody>
       </table></div>
       <div id="hCount" class="hint"></div>
@@ -936,10 +938,10 @@ async function loadHistory() {
   if (!r.ok) return;
   const { entries } = await r.json();
   $('hRows').innerHTML = entries.length ? entries.map((e) => `
-    <tr><td>${esc(e.createdAt.slice(5, 16))}</td><td><strong>${esc(e.name)}</strong></td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명</td>
+    <tr><td>${esc(e.createdAt.slice(5, 16))}</td><td><strong>${esc(e.name)}</strong></td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명</td><td>${e.shoes === '' ? '-' : e.shoes}</td>
     <td>${STATUS[e.status]}</td><td>${esc(e.lanes)}</td><td>${e.waitMin === '' ? '' : e.waitMin + '분'}</td>
     <td>${e.manual ? '수기' : 'QR'}</td><td>${esc([e.memo, e.cancelReason && '취소: ' + e.cancelReason].filter(Boolean).join(' / '))}</td></tr>`).join('')
-    : '<tr><td colspan="9" class="empty" style="border:0">조건에 맞는 이력이 없습니다.</td></tr>';
+    : '<tr><td colspan="10" class="empty" style="border:0">조건에 맞는 이력이 없습니다.</td></tr>';
   $('hCount').textContent = `${entries.length}건` + (entries.length >= 2000 ? ' (최대 2000건까지 표시)' : '');
 }
 $('hForm').addEventListener('submit', (ev) => { ev.preventDefault(); loadHistory(); });
@@ -948,7 +950,7 @@ $('logout').onclick = async () => { await post('/api/admin/logout'); location.re
 $('manual').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   $('msg').textContent = '';
-  const r = await post('/api/admin/entries', { name: $('mName').value, phone: $('mPhone').value, partySize: $('mParty').value, memo: $('mMemo').value });
+  const r = await post('/api/admin/entries', { name: $('mName').value, phone: $('mPhone').value, partySize: $('mParty').value, shoes: $('mShoes').value, memo: $('mMemo').value });
   if (!r.ok) return ($('msg').textContent = r.body.error || '등록에 실패했습니다.');
   ev.target.reset();
   load();
@@ -1017,10 +1019,11 @@ async function loadIntake() {
   if (r.ok) { intake = await r.json(); drawIntake(); }
 }
 
+const shoesNote = (e) => (e.shoes === null ? '' : `<div class="meta">신발 ${e.shoes}</div>`); // 신발 대여 인원(미확인이면 표시 안 함)
 async function load() {
   const r = await fetch('/api/admin/entries');
   if (r.status === 401) { $('app').hidden = true; $('login').hidden = false; return; }
-  const { entries } = await r.json();
+  const { entries, visitMonths } = await r.json();
   $('login').hidden = true; $('app').hidden = false;
   if (!es) { es = new EventSource('/api/events'); es.onmessage = (e) => { load(); if (e.data === 'new') beep(); }; loadIntake(); route(); }
 
@@ -1030,16 +1033,16 @@ async function load() {
 
   if (!waitingList.some((e) => e.id === selectedId)) selectedId = null;
   $('rows').innerHTML = waitingList.length ? waitingList.map((e, i) => `
-    <div class="q ${e.status}${e.id === selectedId ? ' sel' : ''}" data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}">
+    <div class="q ${e.status}${e.id === selectedId ? ' sel' : ''}" data-id="${e.id}" data-party="${e.partySize}" data-shoes="${e.shoes ?? ''}" data-memo="${esc(e.memo)}">
       <div class="qline" tabindex="0" role="button" aria-expanded="${e.id === selectedId}">
         <div><span class="no">${i + 1}</span></div>
         <div class="time">${esc(e.createdAt.slice(11, 16))}</div>
         <div class="nm"><span class="chev">›</span><span class="nmtxt">
-          <span class="nmline">${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}</span>
+          <span class="nmline">${esc(e.name)}${e.status === 'CALLED' ? '<span class="badge CALLED">호출됨</span>' : ''}${e.manual ? '<span class="badge WAITING">수기</span>' : ''}${e.visits === null ? '' : `<span class="visits" title="최근 ${visitMonths}개월 동안 레인 배정을 받은 날 수">${visitMonths}개월 ${e.visits ? e.visits + '회' : '첫 방문'}</span>`}</span>
           <small class="nmeta">${esc(e.createdAt.slice(11, 16))}${e.phone ? ' · ' + rv('entry', e.id, e.phone) : ''}</small>
           ${e.memo ? `<small class="nmemo">${esc(e.memo)}</small>` : ''}
         </span></div>
-        <div>${e.partySize}명</div>
+        <div>${e.partySize}명${shoesNote(e)}</div>
         <div class="phone">${rv('entry', e.id, e.phone) || '—'}</div>
         <div class="cmemo">${esc(e.memo) || '—'}</div>
       </div>
@@ -1047,8 +1050,8 @@ async function load() {
     </div>`).join('') : '<div class="empty" style="border:0;border-radius:0">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</div>';
 
   $('done').innerHTML = done.length ? done.map((e) => `
-    <tr data-id="${e.id}" data-party="${e.partySize}" data-memo="${esc(e.memo)}" data-lanes="${esc(e.lanes)}">
-      <td><strong>${esc(e.name)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명</td>
+    <tr data-id="${e.id}" data-party="${e.partySize}" data-shoes="${e.shoes ?? ''}" data-memo="${esc(e.memo)}" data-lanes="${esc(e.lanes)}">
+      <td><strong>${esc(e.name)}</strong>${e.memo ? `<div class="meta">${esc(e.memo)}</div>` : ''}</td><td>${rv('entry', e.id, e.phone)}</td><td>${e.partySize}명${shoesNote(e)}</td>
       <td><span class="lanechip">${esc(e.lanes)}번</span></td>
       <td>${esc((e.assignedAt || '').slice(11, 16))}</td>
       <td class="actions"><button data-act="relane">레인 변경</button><button data-act="edit">수정</button><button class="danger" data-act="cancel">배정 취소</button></td>
@@ -1064,6 +1067,7 @@ function actions(e) {
     <button class="t" data-act="cancel">대기취소</button>
     <span class="sep"></span>
     <button class="p" data-act="edit-party">인원수정</button>
+    <button class="p" data-act="edit-shoes">신발수정</button>
     <button class="y" data-act="edit-memo">메모설정</button>
     <span class="sep"></span>
     <button class="d" data-act="blacklist">블랙리스트</button>`;
@@ -1108,17 +1112,25 @@ document.addEventListener('click', async (ev) => {
   if (act === 'edit' || act === 'edit-party') { // 배정 완료 표의 `수정`은 인원·메모를 함께 묻고, 대기자 메뉴는 하나씩 묻는다
     const party = prompt('인원 (1~8)', row.dataset.party);
     if (party === null) return;
-    body = { partySize: party, memo: row.dataset.memo };
+    body = { partySize: party, memo: row.dataset.memo }; // 신발은 보내지 않으면 새 인원을 넘지 않게만 줄어든다
     if (act === 'edit') {
+      const shoes = prompt(`신발 대여 인원 (0~${party}, 비우면 미확인)`, row.dataset.shoes);
+      if (shoes === null) return;
+      body.shoes = shoes;
       const memo = prompt('메모', row.dataset.memo);
       if (memo === null) return;
       body.memo = memo;
     }
   }
+  if (act === 'edit-shoes') {
+    const shoes = prompt(`신발 대여 인원 (0~${row.dataset.party}, 0=대여 안함)`, row.dataset.shoes);
+    if (shoes === null) return;
+    body = { partySize: row.dataset.party, shoes, memo: row.dataset.memo };
+  }
   if (act === 'edit-memo') {
     const memo = prompt('메모', row.dataset.memo);
     if (memo === null) return;
-    body = { partySize: row.dataset.party, memo };
+    body = { partySize: row.dataset.party, memo }; // 신발은 그대로
   }
   $('msg').textContent = '';
   const r = await post(`/api/admin/entries/${row.dataset.id}/${act.startsWith('edit') ? 'edit' : act}`, body);

@@ -114,7 +114,8 @@ mock.listen(0, () => server.listen(0, async () => {
 
     // --- 접수 ---
     assert.equal((await call('POST', '/api/entries', { partySize: 9 })).status, 400);
-    const a = await call('POST', '/api/entries', { phone: '01000000000', partySize: 4 }); // 본문의 번호는 무시, 인증된 번호 사용
+    assert.equal((await call('POST', '/api/entries', { partySize: 4, shoes: 5 })).status, 400); // 신발은 인원을 넘을 수 없다
+    const a = await call('POST', '/api/entries', { phone: '01000000000', partySize: 4, shoes: 3 }); // 본문의 번호는 무시, 인증된 번호 사용
     assert.equal(a.status, 201);
     assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token);
     // 같은 계정의 중복 접수는 번호를 바꿔도 막는다
@@ -139,6 +140,8 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(list.length, 1);
     assert.equal(list[0].name, '홍길동');
     assert.equal(list[0].phone, '010-****-2222'); // 대기 현황은 마스킹
+    assert.equal(list[0].shoes, 3);
+    assert.equal((await call('GET', '/api/me')).body.last.party, list[0].partySize); // 지난 접수 인원
     const rawPhone = (t, id) => server.db.prepare(`SELECT phone FROM ${t} WHERE id=?`).get(id).phone;
     assert.ok(rawPhone('entries', list[0].id).startsWith('e1:') && !rawPhone('entries', list[0].id).includes('2222')); // 저장은 암호문
     const ida = list[0].id;
@@ -278,6 +281,35 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.match(histRow.phone, /^010-\*{4}-\d{4}$/); // 이력도 마스킹
     const shownEntry = await call('POST', '/api/admin/reveal', { type: 'entry', id: histRow.id, reason: '미결제 확인' });
     assert.match(shownEntry.body.phone, /^01\d{8,9}$/);
+    // --- 최근 3개월 방문 횟수: 같은 번호로 배정받은 날 수 ---
+    const visitOf = async (name) => (await order()).find((e) => e.name === name).visits;
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v1','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-10 days'),datetime('now','localtime','-10 days'))").run(server.ep('01088880000'));
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v2','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-10 days','+1 hour'),datetime('now','localtime','-10 days','+1 hour'))").run(server.ep('01088880000')); // 같은 날 두 번 = 1회
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v3','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-30 days'),datetime('now','localtime','-30 days'))").run(server.ep('01088880000'));
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v4','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-120 days'),datetime('now','localtime','-120 days'))").run(server.ep('01088880000')); // 3개월 밖
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at) VALUES ('v5','방문손님',?,1,'WAITING',datetime('now','localtime'))").run(server.ep('01088880000'));
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at) VALUES ('v6','첫방문손님',?,1,'WAITING',datetime('now','localtime'))").run(server.ep('01088881111'));
+    assert.equal(await visitOf('방문손님'), 2);
+    assert.equal(await visitOf('첫방문손님'), 0);
+    assert.equal((await order()).find((e) => !e.phone).visits, null); // 번호 없는 수기 건
+    // --- 신발 대여 인원: 0~인원, 인원을 넘을 수 없음 ---
+    assert.equal((await call('POST', '/api/admin/entries', { name: '신발손님', partySize: 4, shoes: 5 })).status, 400);
+    assert.equal((await call('POST', '/api/admin/entries', { name: '신발손님', partySize: 4, shoes: -1 })).status, 400);
+    assert.equal((await call('POST', '/api/admin/entries', { name: '신발손님', partySize: 4, shoes: 3 })).status, 201);
+    const sh = () => order().then((l) => l.find((e) => e.name === '신발손님'));
+    assert.equal((await sh()).shoes, 3);
+    const shId = (await sh()).id;
+    assert.equal((await call('POST', `/api/admin/entries/${shId}/edit`, { partySize: 2 })).status, 200); // 인원을 줄이면 신발도 인원 이하로
+    assert.equal((await sh()).shoes, 2);
+    assert.equal((await call('POST', `/api/admin/entries/${shId}/edit`, { partySize: 2, shoes: 3 })).status, 400);
+    assert.equal((await call('POST', `/api/admin/entries/${shId}/edit`, { partySize: 2, shoes: 0 })).status, 200); // 전체 대여 안함
+    assert.equal((await sh()).shoes, 0);
+    assert.equal((await call('POST', `/api/admin/entries/${shId}/edit`, { partySize: 3, shoes: '' })).status, 200); // 비우면 미확인
+    assert.equal((await sh()).shoes, null);
+    assert.equal((await call('POST', '/api/admin/entries', { name: '신발미확인', partySize: 2 })).status, 201);
+    assert.equal((await order()).find((e) => e.name === '신발미확인').shoes, null);
+    const shHist = (await call('GET', '/api/admin/history?from=2000-01-01&to=2999-12-31&q=신발손님')).body.entries[0];
+    assert.equal(shHist.shoes, '');
     // 정기 파기와 암호화 이전
     server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,memo) VALUES ('old1','옛손님','01077778888',2,'ASSIGNED',datetime('now','localtime','-400 days'),'메모')").run();
     server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status) VALUES ('legacy1','평문손님','01099991111',1,'CANCELED')").run(); // 암호화 이전 평문 행

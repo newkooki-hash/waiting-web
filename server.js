@@ -18,6 +18,7 @@ const sameSecret = (a, b) => { // 길이와 상관없이 같은 시간에 비교
 const ADMIN_HOST = process.env.ADMIN_HOST; // 예: admin.orandabowling.co.kr. 비우면 호스트 구분 없음(개발용)
 const LANES = 18;
 const MAX_PARTY = 8;
+const VISIT_MONTHS = 3; // 관리자 화면에 보여 주는 최근 방문 횟수의 기간
 const PUBLIC = path.join(__dirname, 'public');
 
 // 전화번호 암호화 저장: 같은 번호는 항상 같은 암호문이 되는 결정적 암호화(AES-256-GCM, IV는 번호의 HMAC).
@@ -62,6 +63,14 @@ try { db.exec('ALTER TABLE entries ADD COLUMN assigned_at TEXT'); } catch {} // 
 try { db.exec('ALTER TABLE entries ADD COLUMN user_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN memo TEXT'); } catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN cancel_reason TEXT'); } catch {}
+try { db.exec('ALTER TABLE entries ADD COLUMN shoes INTEGER'); } catch {} // 신발 대여 인원(0~인원). 비어 있으면 입력되지 않은 건
+// 신발 대여 인원 검사: 비어 있으면 null(미입력), 정수이고 0~인원이면 그 값, 아니면 NaN
+const parseShoes = (v, party) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= party ? n : NaN;
+};
+const shoesError = (party) => ({ error: `신발 대여는 0~${party}명이며 인원을 넘을 수 없습니다.` });
 // 블랙리스트: 전화번호 기준으로 접수를 막는다. 사유(메모)는 관리자만 본다
 db.exec(`CREATE TABLE IF NOT EXISTS blacklist (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,6 +336,7 @@ const publicView = (e) => ({
   token: e.token,
   name: e.name,
   partySize: e.party_size,
+  shoes: e.shoes,
   status: e.status,
   lanes: e.lanes,
   position: e.status === 'WAITING' || e.status === 'CALLED'
@@ -349,6 +359,7 @@ const api = {
     json(res, 200, {
       user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
       activeToken: active?.token || null,
+      last: (u && db.prepare('SELECT party_size AS party, shoes FROM entries WHERE user_id=? ORDER BY id DESC LIMIT 1').get(u.id)) || null, // 지난 접수 인원·신발(다음 접수 기본값)
       intake: { open: intakeOpen(), allowed: hasIntakeToken(req), window: outsideWindow() },
       consent: u ? { missing: missingConsents(u.id), marketing: !!db.prepare('SELECT agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(u.id, 'marketing')?.agreed } : null,
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
@@ -422,12 +433,14 @@ const api = {
     if (!name) return json(res, 400, { error: '이름을 입력하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    const shoes = parseShoes(b.shoes, party);
+    if (Number.isNaN(shoes)) return json(res, 400, shoesError(party));
     if (consentBlocked(res, user.id)) return;
     if (isBlacklisted(phone)) return json(res, 403, BLACKLISTED);
     const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, ep(phone));
     if (dup) return json(res, 409, { error: '이미 접수된 대기가 있습니다.', token: dup.token });
     const token = crypto.randomBytes(12).toString('hex');
-    db.prepare('INSERT INTO entries (token,name,phone,party_size,user_id) VALUES (?,?,?,?,?)').run(token, name, ep(phone), party, user.id);
+    db.prepare('INSERT INTO entries (token,name,phone,party_size,shoes,user_id) VALUES (?,?,?,?,?,?)').run(token, name, ep(phone), party, shoes, user.id);
     touchUser(user.id);
     notify('new'); // 관리자 화면이 알림음을 낸다
     json(res, 201, { token });
@@ -475,10 +488,17 @@ const api = {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const rows = db.prepare(`SELECT * FROM entries WHERE status IN ${ACTIVE}
       OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime')) ORDER BY seq`).all();
+    // 최근 3개월 방문 횟수: 같은 번호로 레인 배정을 받은 날 수(하루에 여러 번 배정돼도 1회). 번호가 없는 수기 건은 null.
+    // 대기 중인 건은 아직 배정 전이라 자기 자신이 포함되지 않는다(화면도 대기 건에만 표시)
+    const phones = [...new Set(rows.map((e) => e.phone).filter(Boolean))];
+    const visits = new Map(phones.length ? db.prepare(`SELECT phone, COUNT(DISTINCT date(assigned_at)) n FROM entries
+      WHERE assigned_at >= datetime('now','localtime','-${VISIT_MONTHS} months') AND phone IN (${phones.map(() => '?').join(',')}) GROUP BY phone`).all(...phones).map((r) => [r.phone, r.n]) : []);
     json(res, 200, {
       lanes: LANES,
+      visitMonths: VISIT_MONTHS,
       entries: rows.map((e) => ({
-        id: e.id, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size,
+        visits: e.phone ? visits.get(e.phone) || 0 : null,
+        id: e.id, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size, shoes: e.shoes,
         status: e.status, lanes: e.lanes, createdAt: e.created_at, assignedAt: e.assigned_at,
         manual: e.user_id === null, memo: e.memo || '',
       })),
@@ -500,11 +520,13 @@ const api = {
     if (phone && !/^01\d{8,9}$/.test(phone)) return json(res, 400, { error: '휴대전화번호를 확인하세요.' });
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY)
       return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
+    const shoes = parseShoes(b.shoes, party);
+    if (Number.isNaN(shoes)) return json(res, 400, shoesError(party));
     if (isBlacklisted(phone)) return json(res, 403, { error: '블랙리스트에 등록된 번호입니다.' });
     if (phone && db.prepare(`SELECT 1 FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(ep(phone)))
       return json(res, 409, { error: '이미 접수된 대기가 있습니다.' });
-    db.prepare('INSERT INTO entries (token,name,phone,party_size,memo) VALUES (?,?,?,?,?)')
-      .run(crypto.randomBytes(12).toString('hex'), name, ep(phone), party, String(b.memo || '').trim().slice(0, 200) || null);
+    db.prepare('INSERT INTO entries (token,name,phone,party_size,shoes,memo) VALUES (?,?,?,?,?,?)')
+      .run(crypto.randomBytes(12).toString('hex'), name, ep(phone), party, shoes, String(b.memo || '').trim().slice(0, 200) || null);
     touchPhone(phone);
     notify();
     json(res, 201, { ok: true });
@@ -868,15 +890,15 @@ const api = {
       THEN CAST(ROUND((julianday(finished_at) - julianday(created_at)) * 1440) AS INTEGER) END AS wait_min
       FROM entries WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 2000`).all(...args);
     const view = rows.map((e) => ({
-      id: e.id, createdAt: e.created_at, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size, status: e.status,
+      id: e.id, createdAt: e.created_at, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size, shoes: e.shoes ?? '', status: e.status,
       lanes: e.lanes || '', assignedAt: e.assigned_at || '', waitMin: e.wait_min ?? '', manual: e.user_id === null,
       memo: e.memo || '', cancelReason: e.cancel_reason || '',
     }));
     if (q.get('format') !== 'csv') return json(res, 200, { from, to, entries: view });
-    const head = ['접수 시각', '이름', '전화', '인원', '상태', '레인', '배정 시각', '대기(분)', '경로', '메모', '취소 사유'];
+    const head = ['접수 시각', '이름', '전화', '인원', '신발', '상태', '레인', '배정 시각', '대기(분)', '경로', '메모', '취소 사유'];
     // 엑셀이 수식으로 해석하지 않도록 =,+,-,@로 시작하는 값 앞에 '를 붙인다
     const cell = (v) => { v = String(v); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
-    const csv = [head, ...view.map((e) => [e.createdAt, e.name, e.phone, e.partySize, e.status, e.lanes, e.assignedAt, e.waitMin, e.manual ? '수기' : 'QR', e.memo, e.cancelReason])]
+    const csv = [head, ...view.map((e) => [e.createdAt, e.name, e.phone, e.partySize, e.shoes, e.status, e.lanes, e.assignedAt, e.waitMin, e.manual ? '수기' : 'QR', e.memo, e.cancelReason])]
       .map((r) => r.map(cell).join(',')).join('\r\n');
     res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="history_${from}_${to}.csv"` });
     res.end('﻿' + csv);
@@ -953,7 +975,10 @@ async function handleAction(req, res, id, action) {
     const party = b.partySize === undefined ? e.party_size : Number(b.partySize);
     if (!Number.isInteger(party) || party < 1 || party > MAX_PARTY) return json(res, 400, { error: `인원은 1~${MAX_PARTY}명입니다.` });
     const memo = b.memo === undefined ? e.memo : String(b.memo).trim().slice(0, 200) || null;
-    db.prepare('UPDATE entries SET party_size=?, memo=? WHERE id=?').run(party, memo, id);
+    // 신발을 보내지 않았으면 기존 값을 두되 새 인원을 넘지 않게 줄인다
+    const shoes = b.shoes === undefined ? (e.shoes === null ? null : Math.min(e.shoes, party)) : parseShoes(b.shoes, party);
+    if (Number.isNaN(shoes)) return json(res, 400, shoesError(party));
+    db.prepare('UPDATE entries SET party_size=?, shoes=?, memo=? WHERE id=?').run(party, shoes, memo, id);
     notify();
     return json(res, 200, { ok: true });
   }
@@ -1395,5 +1420,6 @@ if (require.main === module) {
 server.oauth = oauth;
 server.purgeExpired = purgeExpired;
 server.encryptExistingPhones = encryptExistingPhones;
+server.ep = ep;
 server.db = db;
 module.exports = server;
