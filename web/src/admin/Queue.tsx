@@ -3,6 +3,7 @@ import { Badge, Button, Collapse, Paper, Table, Text, TextInput, UnstyledButton 
 import { useDisclosure } from '@mantine/hooks';
 import { LuCheck, LuChevronDown, LuChevronRight, LuHourglass, LuPlus, LuRefreshCw, LuUser } from 'react-icons/lu';
 import { post } from '../lib/api';
+import { mmss, useCountdown } from '../lib/countdown';
 import { formDialog, promptDialog } from '../lib/dialogs';
 import { Actions, EmptyRow, Meta, Msg, Rv, bind } from './ui';
 import type { QueueEntry } from './types';
@@ -14,6 +15,12 @@ const ICON_BOX = 'rounded-xl bg-white/20 grid place-items-center text-[22px] w-1
 const Sep = () => <span className={`w-px self-stretch mx-1.5 bg-[var(--mantine-color-default-border)]`} />;
 
 const EMPTY = { name: '', phone: '', party: '', shoes: '', memo: '' };
+
+/** 미도착 배지: 접수 후 도착 제한(10분)까지 남은 시간을 센다. 0이 되면 잠시 뒤 다시 조회해 '도착 만료'로 옮긴다 */
+function Unarrived({ left, onZero }: { left: number | null; onZero: () => void }) {
+  const s = useCountdown(left, () => setTimeout(onZero, 1200));
+  return <Badge color="gray" variant="light" size="sm">미도착{s !== null && ' ' + mmss(s)}</Badge>;
+}
 
 export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: () => void }) {
   const [entries, setEntries] = useState<QueueEntry[]>([]);
@@ -33,7 +40,8 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
   }, [onUnauthorized]);
   useEffect(() => { load(); }, [load, tick]);
 
-  const waitingList = entries.filter((e) => e.status !== 'ASSIGNED');
+  const waitingList = entries.filter((e) => e.status === 'WAITING' || e.status === 'CALLED');
+  const expired = entries.filter((e) => e.status === 'EXPIRED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
   const selected = waitingList.some((e) => e.id === selectedId) ? selectedId : null;
   const m = (k: keyof typeof EMPTY) => bind(manual[k], (v) => setManual({ ...manual, [k]: v }));
@@ -186,6 +194,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
                     {e.name}
                     {e.status === 'CALLED' && <Badge color="orange" variant="light" size="sm">호출됨</Badge>}
                     {e.manual && <Badge color="teal" variant="light" size="sm">수기</Badge>}
+                    {e.arrivedAt ? <Badge color="green" variant="light" size="sm" title={e.arrivalMethod === 'qr' ? 'QR 도착 인증' : '직원 도착 처리'}>도착 {e.arrivedAt.slice(11, 16)}</Badge> : <Unarrived left={e.arrivalLeft} onZero={load} />}
                   </span>
                   {e.visits !== null && <Text fz="xs" c="dimmed" title={`최근 ${visitMonths}개월 동안 레인 배정을 받은 날 수`}>{visitMonths}개월 {e.visits ? e.visits + '회 방문' : '첫 방문'}</Text>}
                   <Text fz="xs" c="dimmed" className="hidden max-[760px]:block">{e.createdAt.slice(11, 16)}{e.phone && <> · <Rv type="entry" id={e.id} masked={e.phone} /></>}</Text>
@@ -199,6 +208,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
                 <div className={`flex flex-wrap items-center gap-2 px-4 min-[1001px]:px-6 py-3 border-t ${BORDER} bg-[var(--mantine-color-teal-light)]`}>
                   <div className="flex gap-1 items-center flex-wrap text-[var(--mantine-color-teal-8)] font-bold"><LuUser /> {e.name}</div><Sep />
                   {e.status === 'WAITING' && <Button color="orange" onClick={() => run(e, 'call')}>호출</Button>}
+                  {!e.arrivedAt && <Button color="green" variant="light" onClick={() => run(e, 'arrive')}>수동 도착</Button>}
                   <Button color="teal" onClick={() => run(e, 'assign')}>레인배정</Button>
                   <Button variant="default" title="한 칸 뒤로" onClick={() => run(e, 'yield')}>양보하기</Button>
                   <Button variant="default" onClick={() => run(e, 'tail')}>맨뒤로보내기</Button>
@@ -212,9 +222,31 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
                 </div>
               )}
             </div>
-          )) : <Text ta="center" c="dimmed" className="py-10">대기 중인 팀이 없습니다. 손님이 QR로 접수하면 여기에 바로 나타납니다.</Text>}
+          )) : <Text ta="center" c="dimmed" className="py-10">대기 중인 팀이 없습니다. 손님이 접수하면 여기에 바로 나타납니다.</Text>}
         </div>
       </Paper>
+
+      {/* 도착 만료: 접수 후 10분 안에 도착 인증을 하지 않은 오늘의 건. 매장에 와 있으면 수동 도착으로 되살린다 */}
+      {expired.length > 0 && (
+        <Paper withBorder radius="lg" className="mt-4 overflow-hidden">
+          <div className="px-5 py-3 bg-[var(--mantine-color-default-hover)]"><Text fw={700}>도착 만료 {expired.length}팀 <Text span c="dimmed" fz="sm">· 오늘, 접수 후 10분 안에 도착 인증을 하지 않은 건</Text></Text></div>
+          <Table.ScrollContainer minWidth={520}>
+            <Table verticalSpacing="sm">
+              <Table.Tbody>
+                {expired.map((e) => (
+                  <Table.Tr key={e.id}>
+                    <Table.Td><Text fw={700}>{e.name}</Text></Table.Td>
+                    <Table.Td className="font-mono">{e.createdAt.slice(11, 16)} 접수</Table.Td>
+                    <Table.Td>{e.phone ? <Rv type="entry" id={e.id} masked={e.phone} /> : '—'}</Table.Td>
+                    <Table.Td>{e.partySize}명</Table.Td>
+                    <Actions><Button color="green" variant="light" size="xs" onClick={() => run(e, 'arrive')}>수동 도착(대기 복구)</Button></Actions>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        </Paper>
+      )}
       <Msg>{msg}</Msg>
     </section>
   );

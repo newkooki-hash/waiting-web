@@ -53,7 +53,7 @@ export function Intake({ intake, reload }: { intake: IntakeInfo | null; reload: 
 
   return (
     <section>
-      <Heading title="QR 관리" sub="손님은 매장의 QR 코드를 스캔해야 접수할 수 있습니다." />
+      <Heading title="QR 관리" sub="도착 인증용 QR입니다. 손님이 접수한 뒤 매장에서 스캔하면 대기가 '도착'으로 바뀝니다. 접수 후 10분 안에 스캔하지 않으면 '도착 만료'가 됩니다." />
       <div className="grid gap-4 grid-cols-1 min-[48em]:grid-cols-2">
         <Panel className="print:border-0 print:text-center">
           <div className="inline-block bg-white p-2.5 rounded-lg leading-none [&_img]:w-[220px] [&_img]:h-[220px] print:[&_img]:w-[340px] print:[&_img]:h-[340px]" dangerouslySetInnerHTML={{ __html: qrHtml }} />
@@ -78,10 +78,10 @@ export function Intake({ intake, reload }: { intake: IntakeInfo | null; reload: 
               <Button loading={saving} onClick={saveSched}>저장</Button>
               <Text role="status" c={msg.color} className="pb-[6px]">{msg.text}</Text>
             </div>
-            <Text c="dimmed" fz="sm" className="mt-2.5">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다 (예: 18:00~02:00). 시간대 밖에는 QR로 접수할 수 없습니다.</Text>
+            <Text c="dimmed" fz="sm" className="mt-2.5">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다 (예: 18:00~02:00). 시간대 밖에는 손님이 새로 접수할 수 없습니다.</Text>
           </Panel>
           <Panel>
-            <Title order={5} className="mb-2.5">QR 코드 관리</Title>
+            <Title order={5} className="mb-2.5">도착 인증 QR 관리</Title>
             <Button color="red" variant="light" onClick={rotate}>QR 새로 만들기</Button>
             <Text c="dimmed" fz="sm" className="mt-2.5">새로 만들면 이전에 출력한 QR은 사용할 수 없습니다. 인쇄물을 교체할 때만 누르세요.</Text>
             <Text c="dimmed" fz="xs" className="mt-2.5 break-all">{intake.url}</Text>

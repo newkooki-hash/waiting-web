@@ -63,6 +63,12 @@ try { db.exec('ALTER TABLE entries ADD COLUMN assigned_at TEXT'); } catch {} // 
 try { db.exec('ALTER TABLE entries ADD COLUMN user_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN memo TEXT'); } catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN cancel_reason TEXT'); } catch {}
+try { db.exec('ALTER TABLE entries ADD COLUMN arrival_method TEXT'); } catch {} // 도착 인증 방법: qr(손님 스캔) / staff(직원 수동·수기 등록)
+try {
+  db.exec('ALTER TABLE entries ADD COLUMN arrived_at TEXT'); // 도착 인증 시각. 비어 있으면 미도착
+  // 처음 적용할 때 이미 대기 중인 건은 도착한 것으로 보아 배포 직후 한꺼번에 자동 취소되지 않게 한다
+  db.exec("UPDATE entries SET arrived_at=datetime('now','localtime'), arrival_method='staff' WHERE status IN ('WAITING','CALLED')");
+} catch {}
 try { db.exec('ALTER TABLE entries ADD COLUMN shoes INTEGER'); } catch {} // 신발 대여 인원(0~인원). 비어 있으면 입력되지 않은 건
 // 신발 대여 인원 검사: 비어 있으면 null(미입력), 정수이고 0~인원이면 그 값, 아니면 NaN
 const parseShoes = (v, party) => {
@@ -213,7 +219,16 @@ const outsideWindow = () => { // 스위치는 켜져 있는데 시간대 밖일 
   const sc = schedule();
   return intakeSwitch() && sc.enabled && !intakeOpen() ? `${sc.start}~${sc.end}` : null;
 };
-const INTAKE_COOKIE_AGE = 12 * 3600; // QR을 스캔한 기기는 12시간 동안 접수 가능
+// 도착 인증(PRD 4.3): 접수 후 ARRIVAL_LIMIT_MIN분 안에 매장 QR을 스캔하지 않으면 '도착 만료(EXPIRED)' 상태로 바뀐다.
+// 취소(CANCELED)와 다른 상태이고, 타이머 없이 대기 목록·조회·도착 인증 요청 때마다 접수 시각과 비교해 바꾼다.
+// 만료 시각(finished_at)은 처리한 시각이 아니라 접수+N분이다. 도착 인증과 겹쳐도 arrived_at 조건 덕분에 도착이 이긴다.
+const ARRIVAL_LIMIT_MIN = Number(process.env.ARRIVAL_LIMIT_MIN) || 10;
+const expireUnarrived = () => {
+  const n = db.prepare(`UPDATE entries SET status='EXPIRED', finished_at=datetime(created_at, '+' || ? || ' minutes')
+    WHERE status='WAITING' AND arrived_at IS NULL AND created_at <= datetime('now','localtime','-' || ? || ' minutes')`).run(ARRIVAL_LIMIT_MIN, ARRIVAL_LIMIT_MIN).changes;
+  if (n) notify();
+  return n;
+};
 
 // 인증번호 정책: 6자리, 5분 유효, 재발송 60초 간격, 계정당 24시간 5회, 오입력 5회
 const CODE_TTL_MS = 5 * 60 * 1000;
@@ -303,17 +318,12 @@ const clientIp = (req) => { // Caddy 뒤에서는 X-Forwarded-For의 클라이�
   const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
   return ['::1', '127.0.0.1', '::ffff:127.0.0.1'].includes(remote) && fwd ? fwd : remote;
 };
-const hasIntakeToken = (req) => {
-  const c = Buffer.from(cookie(req, 'intake') || ''), t = Buffer.from(getSetting('intake_token'));
-  return c.length === t.length && crypto.timingSafeEqual(c, t);
-};
-// 접수(SMS 발송·대기 등록) 가능 여부. 불가하면 응답을 보내고 true를 돌려준다.
+// 접수(SMS 발송·대기 등록) 가능 여부. 접수는 공개이며 QR은 필요 없다(QR은 도착 인증용). 불가하면 응답을 보내고 true를 돌려준다.
 const intakeBlocked = (req, res) => {
   if (!intakeOpen()) {
     const w = outsideWindow();
     return json(res, 403, { error: w ? `접수 가능 시간은 ${w}입니다.` : '지금은 접수 중이 아닙니다.', code: 'INTAKE_CLOSED' }), true;
   }
-  if (!hasIntakeToken(req)) return json(res, 403, { error: '매장의 QR 코드를 스캔해 접수해 주세요.', code: 'QR_REQUIRED' }), true;
   return false;
 };
 const SECURE = oauth.BASE_URL.startsWith('https') ? '; Secure' : '';
@@ -334,8 +344,14 @@ const redirect = (res, to, cookies = []) => {
   res.end();
 };
 
+// 도착 인증까지 남은 초(대기 중이고 아직 도착 전일 때만)
+const arrivalLeft = (e) => e.status === 'WAITING' && !e.arrived_at
+  ? Math.max(0, ARRIVAL_LIMIT_MIN * 60 - db.prepare("SELECT strftime('%s','now','localtime') - strftime('%s',?) AS s").get(e.created_at).s)
+  : null;
 const publicView = (e) => ({
   token: e.token,
+  arrived: !!e.arrived_at,
+  arrivalLeft: arrivalLeft(e),
   name: e.name,
   partySize: e.party_size,
   shoes: e.shoes,
@@ -356,13 +372,14 @@ const TRANSITIONS = {
 
 const api = {
   'GET /api/me': async (req, res) => {
+    expireUnarrived();
     const u = currentUser(req);
     const active = u && db.prepare(`SELECT token FROM entries WHERE user_id=? AND status IN ${ACTIVE}`).get(u.id);
     json(res, 200, {
       user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
       activeToken: active?.token || null,
       last: (u && db.prepare('SELECT party_size AS party, shoes FROM entries WHERE user_id=? ORDER BY id DESC LIMIT 1').get(u.id)) || null, // 지난 접수 인원·신발(다음 접수 기본값)
-      intake: { open: intakeOpen(), allowed: hasIntakeToken(req), window: outsideWindow() },
+      intake: { open: intakeOpen(), window: outsideWindow() },
       consent: u ? { missing: missingConsents(u.id), marketing: !!db.prepare('SELECT agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(u.id, 'marketing')?.agreed } : null,
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
     });
@@ -465,7 +482,7 @@ const api = {
   },
   'GET /api/admin/intake': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    json(res, 200, { open: intakeSwitch(), openNow: intakeOpen(), schedule: schedule(), url: `${oauth.BASE_URL}/?t=${getSetting('intake_token')}` });
+    json(res, 200, { open: intakeSwitch(), openNow: intakeOpen(), schedule: schedule(), url: `${oauth.BASE_URL}/arrive?t=${getSetting('intake_token')}` });
   },
   'POST /api/admin/intake/open': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
@@ -484,12 +501,14 @@ const api = {
   'POST /api/admin/intake/rotate': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     setSetting('intake_token', newIntakeToken());
-    json(res, 200, { url: `${oauth.BASE_URL}/?t=${getSetting('intake_token')}` });
+    json(res, 200, { url: `${oauth.BASE_URL}/arrive?t=${getSetting('intake_token')}` });
   },
   'GET /api/admin/entries': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    expireUnarrived();
     const rows = db.prepare(`SELECT * FROM entries WHERE status IN ${ACTIVE}
-      OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime')) ORDER BY seq`).all();
+      OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime'))
+      OR (status='EXPIRED' AND date(created_at)=date('now','localtime')) ORDER BY seq`).all();
     // 최근 3개월 방문 횟수: 같은 번호로 레인 배정을 받은 날 수(하루에 여러 번 배정돼도 1회). 번호가 없는 수기 건은 null.
     // 대기 중인 건은 아직 배정 전이라 자기 자신이 포함되지 않는다(화면도 대기 건에만 표시)
     const phones = [...new Set(rows.map((e) => e.phone).filter(Boolean))];
@@ -503,6 +522,7 @@ const api = {
         id: e.id, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size, shoes: e.shoes,
         status: e.status, lanes: e.lanes, createdAt: e.created_at, assignedAt: e.assigned_at,
         manual: e.user_id === null, memo: e.memo || '',
+        arrivedAt: e.arrived_at, arrivalMethod: e.arrival_method, arrivalLeft: arrivalLeft(e),
       })),
     });
   },
@@ -527,7 +547,7 @@ const api = {
     if (isBlacklisted(phone)) return json(res, 403, { error: '블랙리스트에 등록된 번호입니다.' });
     if (phone && db.prepare(`SELECT 1 FROM entries WHERE phone=? AND status IN ${ACTIVE}`).get(ep(phone)))
       return json(res, 409, { error: '이미 접수된 대기가 있습니다.' });
-    db.prepare('INSERT INTO entries (token,name,phone,party_size,shoes,memo) VALUES (?,?,?,?,?,?)')
+    db.prepare("INSERT INTO entries (token,name,phone,party_size,shoes,memo,arrived_at,arrival_method) VALUES (?,?,?,?,?,?,datetime('now','localtime'),'staff')")
       .run(crypto.randomBytes(12).toString('hex'), name, ep(phone), party, shoes, String(b.memo || '').trim().slice(0, 200) || null);
     touchPhone(phone);
     notify();
@@ -852,7 +872,7 @@ const api = {
       const sum = waits.reduce((a, b) => a + b, 0);
       return {
         teams: list.length, people: list.reduce((a, r) => a + r.party, 0),
-        assigned: list.filter(isAssigned).length, canceled: list.filter((r) => r.status === 'CANCELED').length,
+        assigned: list.filter(isAssigned).length, canceled: list.filter((r) => r.status === 'CANCELED').length, expired: list.filter((r) => r.status === 'EXPIRED').length,
         waiting: list.filter((r) => r.status === 'WAITING' || r.status === 'CALLED').length,
         avgWait: waits.length ? Math.round(sum / waits.length * 10) / 10 : null,
         avgAssignedWait: avg(list.filter((r) => r.wait !== null && r.was_assigned)),
@@ -961,6 +981,21 @@ const withdrawAccount = ({ userId = null, memberId = null }, doneBy) => {
   return { ok: true };
 };
 
+// 로그인한 손님의 진행 중 대기 건을 도착 처리한다. 결과: ok / already / expired / none
+const arriveUser = (userId) => {
+  expireUnarrived();
+  const e = db.prepare(`SELECT id, arrived_at FROM entries WHERE user_id=? AND status IN ${ACTIVE}`).get(userId);
+  if (!e) {
+    const last = db.prepare('SELECT status, finished_at FROM entries WHERE user_id=? ORDER BY id DESC LIMIT 1').get(userId);
+    const hourAgo = db.prepare("SELECT datetime('now','localtime','-1 hour') AS t").get().t;
+    return last?.status === 'EXPIRED' && last.finished_at >= hourAgo ? 'expired' : 'none';
+  }
+  if (e.arrived_at) return 'already';
+  db.prepare("UPDATE entries SET arrived_at=datetime('now','localtime'), arrival_method='qr' WHERE id=? AND arrived_at IS NULL").run(e.id);
+  notify();
+  return 'ok';
+};
+
 const LANES_ERROR = { error: `레인은 1~${LANES} 번호로 입력하세요. 예: 5,6` };
 const parseLanes = (text) => { // "6, 5" → "5,6". 잘못된 입력이면 null
   const picked = [...new Set(String(text || '').split(',').map((s) => Number(s.trim())))];
@@ -981,6 +1016,15 @@ async function handleAction(req, res, id, action) {
     const shoes = b.shoes === undefined ? (e.shoes === null ? null : Math.min(e.shoes, party)) : parseShoes(b.shoes, party);
     if (Number.isNaN(shoes)) return json(res, 400, shoesError(party));
     db.prepare('UPDATE entries SET party_size=?, shoes=?, memo=? WHERE id=?').run(party, shoes, memo, id);
+    notify();
+    return json(res, 200, { ok: true });
+  }
+  if (action === 'arrive' && e) { // 수동 도착 처리: QR을 못 쓰는 손님. 도착 만료된 건이면 대기로 복구한다(순서는 접수 순 그대로)
+    if (e.status !== 'WAITING' && e.status !== 'CALLED' && e.status !== 'EXPIRED') return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
+    if (e.arrived_at) return json(res, 409, { error: '이미 도착 처리된 건입니다.' });
+    if (e.status === 'EXPIRED' && db.prepare(`SELECT 1 FROM entries WHERE status IN ${ACTIVE} AND id<>? AND ((user_id IS NOT NULL AND user_id=?) OR (phone IS NOT NULL AND phone=?))`).get(id, e.user_id ?? -1, e.phone ?? ''))
+      return json(res, 409, { error: '같은 손님의 다른 대기가 이미 있어 복구할 수 없습니다.' });
+    db.prepare("UPDATE entries SET status='WAITING', finished_at=NULL, arrived_at=datetime('now','localtime'), arrival_method='staff' WHERE id=?").run(id);
     notify();
     return json(res, 200, { ok: true });
   }
@@ -1331,11 +1375,17 @@ const server = http.createServer(async (req, res) => {
   try {
     if (api[route]) return await api[route](req, res);
 
-    // 매장 QR(/?t=토큰): 맞으면 접수 쿠키를 심고 주소에서 토큰을 지운다
-    if (route === 'GET /' && url.searchParams.has('t')) {
-      const ok = url.searchParams.get('t') === getSetting('intake_token');
-      return redirect(res, ok ? '/' : '/?qr=invalid', ok
-        ? [`intake=${getSetting('intake_token')}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${INTAKE_COOKIE_AGE}${SECURE}`] : []);
+    // 예전 접수 QR(/?t=토큰)은 같은 토큰으로 도착 인증에 연결한다
+    if (route === 'GET /' && url.searchParams.has('t')) return redirect(res, `/arrive?t=${encodeURIComponent(url.searchParams.get('t'))}`);
+
+    // 매장 QR 도착 인증(/arrive?t=토큰). 로그인 전이면 토큰을 쿠키에 두고 로그인 후 이어서 처리한다
+    if (route === 'GET /arrive') {
+      const t = url.searchParams.get('t') || cookie(req, 'arrive');
+      const clear = `arrive=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`;
+      if (!t || !sameSecret(t, getSetting('intake_token'))) return redirect(res, '/?arrived=invalid', [clear]);
+      const u = currentUser(req);
+      if (!u) return redirect(res, '/?arrived=login', [`arrive=${encodeURIComponent(t)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${SECURE}`]);
+      return redirect(res, `/?arrived=${arriveUser(u.id)}`, [clear]);
     }
 
     if (route === 'GET /api/events') {
@@ -1369,7 +1419,7 @@ const server = http.createServer(async (req, res) => {
       touchUser(u.id);
       const sid = crypto.randomBytes(24).toString('hex');
       db.prepare('INSERT INTO user_sessions (token,user_id) VALUES (?,?)').run(sid, u.id);
-      const back = cookie(req, 'login_next') === 'tournament' ? '/tournament' : '/';
+      const back = cookie(req, 'arrive') ? '/arrive' : cookie(req, 'login_next') === 'tournament' ? '/tournament' : '/';
       return redirect(res, back, [clear, `login_next=; Path=/; Max-Age=0${SECURE}`, `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7776000${SECURE}`]);
     }
     if (req.method === 'GET' && (m = url.pathname.match(/^\/banner\/(\d+)$/))) {
@@ -1379,6 +1429,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(b.data);
     }
     if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/entries\/([0-9a-f]+)$/))) {
+      expireUnarrived();
       const e = db.prepare('SELECT * FROM entries WHERE token=?').get(m[1]);
       return e ? json(res, 200, publicView(e)) : json(res, 404, { error: 'not found' });
     }
@@ -1425,6 +1476,7 @@ if (require.main === module) {
 }
 server.oauth = oauth;
 server.purgeExpired = purgeExpired;
+server.expireUnarrived = expireUnarrived;
 server.encryptExistingPhones = encryptExistingPhones;
 server.ep = ep;
 server.db = db;

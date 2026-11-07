@@ -4,7 +4,10 @@ export interface QueueEntry {
   phone: string;
   partySize: number;
   shoes: number | null;
-  status: 'WAITING' | 'CALLED' | 'ASSIGNED';
+  status: 'WAITING' | 'CALLED' | 'ASSIGNED' | 'EXPIRED';
+  arrivedAt: string | null;
+  arrivalMethod: 'qr' | 'staff' | null;
+  arrivalLeft: number | null;
   memo: string;
   manual: boolean;
   createdAt: string;

@@ -7,7 +7,7 @@ const minText = (v: number | null) => (v === null ? '-' : `${v}분`);
 const addDays = (d: string, n: number) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 
 interface Stats {
-  total: { teams: number; people: number; assigned: number; canceled: number; waiting: number; avgWait: number | null; avgAssignedWait: number | null; avgCanceledWait: number | null; medianWait: number | null; maxWait: number | null };
+  total: { teams: number; people: number; assigned: number; canceled: number; expired: number; waiting: number; avgWait: number | null; avgAssignedWait: number | null; avgCanceledWait: number | null; medianWait: number | null; maxWait: number | null };
   manual: number;
   hours: { hour: number; teams: number; avgWait: number | null }[];
   weekdays: { dow: number; teams: number; people: number; canceled: number; avgWait: number | null }[];
@@ -66,7 +66,7 @@ export function StatsView() {
           <div className="grid gap-4 grid-cols-2 min-[48em]:grid-cols-3 min-[62em]:grid-cols-5 mb-4">
             <Card label="접수" value={`${t.teams}팀`} sub={`${t.people}명 · 수기 ${s.manual}팀`} />
             <Card label="배정" value={`${t.assigned}팀`} sub={t.waiting ? `대기 중 ${t.waiting}팀` : ''} />
-            <Card label="취소율" value={`${rate}%`} sub={`${t.canceled}팀 취소`} />
+            <Card label="취소율" value={`${rate}%`} sub={`${t.canceled}팀 취소 · ${t.expired}팀 도착 만료`} />
             <Card label="평균 대기" value={minText(t.avgWait)} sub={`배정 ${minText(t.avgAssignedWait)} · 취소 ${minText(t.avgCanceledWait)}`} />
             <Card label="대기 중앙값·최장" value={minText(t.medianWait)} sub={`최장 ${minText(t.maxWait)}`} />
           </div>
