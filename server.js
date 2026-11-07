@@ -19,7 +19,7 @@ const ADMIN_HOST = process.env.ADMIN_HOST; // 예: admin.orandabowling.co.kr. �
 const LANES = 18;
 const MAX_PARTY = 8;
 const VISIT_MONTHS = 3; // 관리자 화면에 보여 주는 최근 방문 횟수의 기간
-const PUBLIC = path.join(__dirname, 'public');
+const PUBLIC = path.join(__dirname, 'dist'); // npm run build 결과물(web/ 소스)
 
 // 전화번호 암호화 저장: 같은 번호는 항상 같은 암호문이 되는 결정적 암호화(AES-256-GCM, IV는 번호의 HMAC).
 // 그래서 중복 확인·유니크 인덱스·`phone=?` 조회가 그대로 동작한다. 저장은 ep(), 읽기는 dp()를 쓴다.
@@ -318,7 +318,9 @@ const intakeBlocked = (req, res) => {
 };
 const SECURE = oauth.BASE_URL.startsWith('https') ? '; Secure' : '';
 const adminCookie = (token) => `admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ADMIN_SESSION_MS / 1000}${SECURE}`;
+const DEV_NO_LOGIN = process.env.DEV_NO_LOGIN === '1' && /^https?:\/\/(localhost|127\.0\.0\.1)/.test(oauth.BASE_URL); // 로컬 전용 관리자 로그인 생략
 const isAdmin = (req) => {
+  if (DEV_NO_LOGIN) return true;
   const t = cookie(req, 'admin');
   return !!t && !!db.prepare('SELECT 1 FROM admin_sessions WHERE token=? AND expires_at > ?').get(t, Date.now());
 };
@@ -1307,7 +1309,7 @@ const purgeExpired = () => {
   return r;
 };
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -1317,7 +1319,7 @@ const server = http.createServer(async (req, res) => {
     const onAdminHost = (req.headers.host || '').split(':')[0] === ADMIN_HOST;
     if (onAdminHost) {
       if (url.pathname === '/') url.pathname = '/admin';
-      else if (!isAdminPath && !['/api/events', '/theme.css'].includes(url.pathname)) return json(res, 404, { error: 'not found' });
+      else if (!isAdminPath && url.pathname !== '/api/events' && !url.pathname.startsWith('/assets/')) return json(res, 404, { error: 'not found' });
     } else if (isAdminPath) return json(res, 404, { error: 'not found' });
   }
   const adminToken = cookie(req, 'admin');
@@ -1398,7 +1400,11 @@ const server = http.createServer(async (req, res) => {
       const file = page || url.pathname.slice(1);
       const full = path.join(PUBLIC, file);
       if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {
-        res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream' });
+        // /assets/ 파일 이름에는 내용 해시가 붙어 있어 오래 캐시해도 된다
+        res.writeHead(200, {
+          'Content-Type': MIME[path.extname(full)] || 'application/octet-stream',
+          ...(file.startsWith('assets/') ? { 'Cache-Control': 'public, max-age=31536000, immutable' } : {}),
+        });
         return res.end(fs.readFileSync(full));
       }
     }

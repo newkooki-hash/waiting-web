@@ -43,6 +43,7 @@ else
   git clone "$REPO" "$APP_DIR"
 fi
 chown -R waiting:waiting "$APP_DIR"
+sudo -u waiting bash -c "cd $APP_DIR && npm ci && npm run build"
 
 echo "== 환경변수 파일 =="
 if [ ! -f "$ENV_FILE" ]; then
