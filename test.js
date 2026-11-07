@@ -1,4 +1,4 @@
-// 흐름 검증: 소셜 로그인(모의 제공자) → 접수 → 호출 → 배정, 검증 규칙
+// 흐름 검증: 소셜 로그인(모의 제공자) → 접수 → 배정, 검증 규칙
 process.env.DB_FILE = ':memory:';
 process.env.ADMIN_PASSWORD = 'pw';
 process.env.SMS_MAX_PER_PHONE_DAY = '1'; // 번호당 발송 한도 검증용
@@ -54,36 +54,20 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(cb.location, '/');
     assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동');
 
-    // --- 접수는 공개(QR 불필요), QR은 도착 인증용 ---
+    // --- 접수는 공개(QR 불필요). QR은 공개 접수 주소만 담고, 도착 확인은 카운터에서 직원이 한다 ---
     assert.equal((await call('GET', '/api/admin/intake')).status, 401);
     assert.equal((await call('GET', '/api/me')).body.intake.open, true);
+    assert.equal((await call('GET', '/api/me')).body.arrivalLimitMin, 15); // 도착 확인 제한 15분
     assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).status, 400); // QR 없이도 검증 단계까지 도달
-    assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'PHONE_REQUIRED'); // QR_REQUIRED가 아니다
+    assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'PHONE_REQUIRED');
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
-    const qrToken = () => call('GET', '/api/admin/intake').then((r) => new URL(r.body.url).searchParams.get('t'));
-    assert.match((await call('GET', '/api/admin/intake')).body.url, /\/arrive\?t=/);
-    const scan = (t) => call('GET', `/arrive?t=${t}`, null, { raw: true });
-    const oldToken = await qrToken();
-    assert.equal((await call('GET', `/?t=${oldToken}`, null, { raw: true })).location, `/arrive?t=${oldToken}`); // 예전 QR 주소는 도착 인증으로 연결
-    assert.equal((await scan('wrong')).location, '/?arrived=invalid');
-    assert.equal((await scan(oldToken)).location, '/?arrived=none'); // 로그인했지만 대기 건 없음
-    // 로그인 전에 스캔하면 토큰을 보관하고, 로그인 뒤 /arrive로 돌아와 이어서 처리한다
-    const sid0 = jar.sid; delete jar.sid;
-    assert.equal((await scan(oldToken)).location, '/?arrived=login');
-    assert.ok(jar.arrive);
-    const stA = new URL((await call('GET', '/auth/kakao', null, { raw: true })).location).searchParams.get('state');
-    assert.equal((await call('GET', `/auth/kakao/callback?code=c&state=${stA}`, null, { raw: true })).location, '/arrive');
-    assert.equal((await call('GET', '/arrive', null, { raw: true })).location, '/?arrived=none');
-    assert.ok(!jar.arrive); // 처리 후 보관한 토큰 삭제
+    assert.equal((await call('GET', '/api/admin/intake')).body.url, server.oauth.BASE_URL); // QR은 토큰 없는 공개 주소
+    assert.equal((await call('GET', '/arrive?t=x', null, { raw: true })).location, '/'); // 예전 도착 인증 QR 주소는 접수 화면으로
+    assert.equal((await call('POST', '/api/admin/intake/rotate')).status, 404);
     assert.equal((await call('POST', '/api/admin/intake/open', { open: false })).body.open, false);
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'INTAKE_CLOSED');
     assert.equal((await call('GET', '/api/me')).body.intake.open, false);
-    assert.equal((await scan(oldToken)).location, '/?arrived=none'); // 접수가 닫혀도 도착 인증은 막지 않는다
     assert.equal((await call('POST', '/api/admin/intake/open', { open: true })).body.open, true);
-    await call('POST', '/api/admin/intake/rotate'); // 토큰 갱신: 이전 QR은 무효
-    assert.notEqual(await qrToken(), oldToken);
-    assert.equal((await scan(oldToken)).location, '/?arrived=invalid');
-    assert.equal((await scan(await qrToken())).location, '/?arrived=none');
     delete jar.admin; // 아래 관리자 섹션에서 다시 로그인
     // 관리자 세션은 DB에 저장되고 쓸 때마다 쿠키 만료(7일)가 연장된다
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
@@ -128,7 +112,7 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token);
     const view = async (t) => (await call('GET', `/api/entries/${t}`)).body;
     assert.equal((await view(a.body.token)).arrived, false); // 접수만 하면 미도착
-    assert.ok((await view(a.body.token)).arrivalLeft > 590); // 도착 제한 10분
+    assert.ok((await view(a.body.token)).arrivalLeft > 880); // 도착 확인 제한 15분(900초)
     // 같은 계정의 중복 접수는 번호를 바꿔도 막는다
     assert.equal((await call('POST', '/api/entries', { partySize: 1 })).status, 409);
 
@@ -140,17 +124,6 @@ mock.listen(0, () => server.listen(0, async () => {
     await call('GET', `/auth/kakao/callback?code=c&state=${st2}`, null, { raw: true });
     assert.notEqual(jar.sid, userSid); // 재로그인은 새 세션
     assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token); // 같은 계정이므로 접수 유지
-    // --- QR 도착 인증 ---
-    const arriveToken = server.db.prepare("SELECT value FROM settings WHERE key='intake_token'").get().value;
-    assert.equal((await scan(arriveToken)).location, '/?arrived=ok');
-    assert.equal((await scan(arriveToken)).location, '/?arrived=already');
-    const va = await view(a.body.token);
-    assert.ok(va.arrived && va.arrivalLeft === null);
-    assert.equal(server.db.prepare('SELECT arrival_method m FROM entries WHERE token=?').get(a.body.token).m, 'qr');
-    server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-30 minutes') WHERE token=?").run(a.body.token);
-    assert.equal(server.expireUnarrived(), 0); // 도착한 건은 오래돼도 만료되지 않는다
-    server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime') WHERE token=?").run(a.body.token); // 시각 복원
-
     // --- 관리자 ---
     assert.equal((await call('GET', '/api/admin/entries')).status, 401);
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'x' })).status, 401);
@@ -166,9 +139,17 @@ mock.listen(0, () => server.listen(0, async () => {
     const rawPhone = (t, id) => server.db.prepare(`SELECT phone FROM ${t} WHERE id=?`).get(id).phone;
     assert.ok(rawPhone('entries', list[0].id).startsWith('e1:') && !rawPhone('entries', list[0].id).includes('2222')); // 저장은 암호문
     const ida = list[0].id;
+    // --- 카운터 도착 확인 ---
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/arrive`)).status, 200);
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/arrive`)).status, 409); // 이미 확인됨
+    const va = await view(a.body.token);
+    assert.ok(va.arrived && va.arrivalLeft === null);
+    assert.equal(server.db.prepare('SELECT arrival_method m FROM entries WHERE token=?').get(a.body.token).m, 'staff');
+    server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-30 minutes') WHERE token=?").run(a.body.token);
+    assert.equal(server.expireUnarrived(), 0); // 도착 확인한 건은 오래돼도 만료되지 않는다
+    server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime') WHERE token=?").run(a.body.token); // 시각 복원
 
-    assert.equal((await call('POST', `/api/admin/entries/${ida}/call`)).status, 200);
-    assert.equal((await call('POST', `/api/admin/entries/${ida}/call`)).status, 409);
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/call`)).status, 404); // 호출 기능은 없다(카운터에서 직접 호출)
     assert.equal((await call('POST', `/api/admin/entries/${ida}/assign`, { lanes: '19' })).status, 400);
     assert.equal((await call('POST', `/api/admin/entries/${ida}/assign`, { lanes: '6,5' })).status, 200);
     assert.equal((await call('GET', `/api/entries/${a.body.token}`)).body.lanes, '5,6');
@@ -178,13 +159,18 @@ mock.listen(0, () => server.listen(0, async () => {
     // 배정이 끝나면 다시 접수 가능
     const e2 = await call('POST', '/api/entries', { partySize: 1 });
     assert.equal(e2.status, 201);
-    // --- 미도착 10분 초과: 도착 만료(EXPIRED) 상태 ---
-    assert.equal(server.expireUnarrived(), 0); // 아직 10분 전
-    server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-11 minutes') WHERE token=?").run(e2.body.token);
+    // --- 미도착 15분 초과: 도착 만료(EXPIRED) 상태 ---
+    assert.equal(server.expireUnarrived(), 0); // 아직 15분 전
+    server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-16 minutes') WHERE token=?").run(e2.body.token);
     assert.equal((await view(e2.body.token)).status, 'EXPIRED'); // 조회만 해도 만료 상태로 바뀜(취소와 다른 상태)
     assert.equal((await view(e2.body.token)).position, null);
     assert.ok((await call('GET', '/api/admin/entries')).body.entries.some((e) => e.status === 'EXPIRED')); // 오늘 만료 건은 관리자에게 보임
-    assert.equal((await scan(arriveToken)).location, '/?arrived=expired'); // 취소 직후 스캔은 안내
+    // 직원이 도착 확인을 하면 만료 건이 대기로 복구된다(접수 순서 유지)
+    const e2id = (await call('GET', '/api/admin/entries')).body.entries.find((e) => e.status === 'EXPIRED').id;
+    assert.equal((await call('POST', `/api/admin/entries/${e2id}/arrive`)).status, 200);
+    assert.equal((await view(e2.body.token)).status, 'WAITING');
+    assert.equal((await view(e2.body.token)).arrived, true);
+    assert.equal((await call('POST', `/api/entries/${e2.body.token}/cancel`)).status, 200); // 이후 흐름을 위해 정리
     assert.equal((await call('GET', '/api/me')).body.activeToken, null);
     const e3 = await call('POST', '/api/entries', { partySize: 1 }); // 만료 뒤 재접수 가능
     assert.equal(e3.status, 201);
@@ -231,14 +217,13 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await fetch(base + '/api/admin/history')).status, 401);
     assert.equal((await fetch(base + '/api/admin/entries', { method: 'POST' })).status, 401);
     // --- 순서 조정: 양보·맨뒤로 ---
-    const order = async () => (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status === 'WAITING' || e.status === 'CALLED');
+    const order = async () => (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status === 'WAITING');
     const [first, second] = await order();
     assert.equal((await call('POST', `/api/admin/entries/${second.id}/yield`)).status, 409); // 이미 맨 뒤
-    assert.equal((await call('POST', `/api/admin/entries/${first.id}/call`)).status, 200);
     assert.equal((await call('POST', `/api/admin/entries/${first.id}/yield`)).status, 200);
     let now = await order();
     assert.deepEqual(now.map((e) => e.id), [second.id, first.id]);
-    assert.equal(now[1].status, 'WAITING'); // 호출된 건이 양보하면 대기로 돌아간다
+    assert.equal(now[1].status, 'WAITING');
     assert.equal((await call('POST', `/api/admin/entries/${second.id}/tail`)).status, 200);
     assert.deepEqual((await order()).map((e) => e.id), [first.id, second.id]);
     assert.equal((await call('POST', `/api/admin/entries/${m.id}/yield`)).status, 409); // 취소 건은 불가
@@ -325,8 +310,8 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.match(shownEntry.body.phone, /^01\d{8,9}$/);
     // --- 최근 3개월 방문 횟수: 같은 번호로 배정받은 날 수 ---
     const visitOf = async (name) => (await order()).find((e) => e.name === name).visits;
-    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v1','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-10 days'),datetime('now','localtime','-10 days'))").run(server.ep('01088880000'));
-    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v2','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-10 days','+1 hour'),datetime('now','localtime','-10 days','+1 hour'))").run(server.ep('01088880000')); // 같은 날 두 번 = 1회
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v1','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-10 days','start of day','+9 hours'),datetime('now','localtime','-10 days','start of day','+9 hours'))").run(server.ep('01088880000'));
+    server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v2','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-10 days','start of day','+10 hours'),datetime('now','localtime','-10 days','start of day','+10 hours'))").run(server.ep('01088880000')); // 같은 날 두 번 = 1회
     server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v3','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-30 days'),datetime('now','localtime','-30 days'))").run(server.ep('01088880000'));
     server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at,assigned_at) VALUES ('v4','방문손님',?,1,'ASSIGNED',datetime('now','localtime','-120 days'),datetime('now','localtime','-120 days'))").run(server.ep('01088880000')); // 3개월 밖
     server.db.prepare("INSERT INTO entries (token,name,phone,party_size,status,created_at) VALUES ('v5','방문손님',?,1,'WAITING',datetime('now','localtime'))").run(server.ep('01088880000'));

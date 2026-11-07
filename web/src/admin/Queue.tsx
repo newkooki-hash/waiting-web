@@ -40,7 +40,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
   }, [onUnauthorized]);
   useEffect(() => { load(); }, [load, tick]);
 
-  const waitingList = entries.filter((e) => e.status === 'WAITING' || e.status === 'CALLED');
+  const waitingList = entries.filter((e) => e.status === 'WAITING');
   const expired = entries.filter((e) => e.status === 'EXPIRED');
   const done = entries.filter((e) => e.status === 'ASSIGNED').reverse();
   const selected = waitingList.some((e) => e.id === selectedId) ? selectedId : null;
@@ -113,7 +113,10 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
   const onKey = (ev: KeyboardEvent, id: number) => {
     if ((ev.key === 'Enter' || ev.key === ' ') && ev.target === ev.currentTarget) { ev.preventDefault(); toggle(id); }
   };
-  const shoesNote = (e: QueueEntry) => (e.shoes === null ? null : <Meta>신발 {e.shoes}</Meta>); // 신발 대여 인원(미확인이면 표시 안 함)
+  // 신발 대여 인원: 인원 아래에 배지로 항상 표시한다(미확인은 입력되지 않은 건)
+  const shoesNote = (e: QueueEntry) => (
+    <div><Badge size="sm" variant="light" color={e.shoes === null ? 'yellow' : e.shoes === 0 ? 'gray' : 'blue'}>{e.shoes === null ? '신발 미확인' : e.shoes === 0 ? '신발 대여 안함' : `신발 ${e.shoes}켤레`}</Badge></div>
+  );
   const refreshIcon = <LuRefreshCw />;
 
   return (
@@ -185,16 +188,15 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
         <div className={`${GRID} min-h-11 bg-[var(--mantine-color-default-hover)] text-[var(--mantine-color-dimmed)] font-bold text-[.95rem] max-[760px]:hidden`} aria-hidden="true"><span>번호</span><span>신청시간</span><span>이름</span><span>인원</span><span>전화번호</span><span className="max-[1000px]:hidden">메모</span></div>
         <div>
           {waitingList.length ? waitingList.map((e, i) => (
-            <div key={e.id} className={`border-t ${BORDER} ${e.id === selected ? 'bg-[var(--mantine-color-teal-light)]' : ''} ${e.status === 'CALLED' ? 'shadow-[inset_4px_0_0_var(--mantine-color-orange-filled)]' : ''}`}>
+            <div key={e.id} className={`border-t ${BORDER} ${e.id === selected ? 'bg-[var(--mantine-color-teal-light)]' : ''}`}>
               <div className={`${GRID} min-h-16 cursor-pointer hover:bg-[var(--mantine-color-default-hover)]`} tabIndex={0} role="button" aria-expanded={e.id === selected} onClick={() => toggle(e.id)} onKeyDown={(ev) => onKey(ev, e.id)}>
-                <div><Badge circle size="xl" color={e.status === 'CALLED' ? 'orange' : 'teal'}>{i + 1}</Badge></div>
+                <div><Badge circle size="xl" color="teal">{i + 1}</Badge></div>
                 <div className="font-mono max-[760px]:hidden">{e.createdAt.slice(11, 16)}</div>
                 <div className="flex items-center gap-1.5 min-w-0 font-semibold"><LuChevronRight className={`shrink-0 transition-transform duration-150 ${e.id === selected ? 'rotate-90 text-[var(--mantine-color-teal-filled)]' : 'text-[var(--mantine-color-dimmed)]'}`} /><span className="flex flex-col min-w-0">
                   <span className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
                     {e.name}
-                    {e.status === 'CALLED' && <Badge color="orange" variant="light" size="sm">호출됨</Badge>}
                     {e.manual && <Badge color="teal" variant="light" size="sm">수기</Badge>}
-                    {e.arrivedAt ? <Badge color="green" variant="light" size="sm" title={e.arrivalMethod === 'qr' ? 'QR 도착 인증' : '직원 도착 처리'}>도착 {e.arrivedAt.slice(11, 16)}</Badge> : <Unarrived left={e.arrivalLeft} onZero={load} />}
+                    {e.arrivedAt ? <Badge color="green" variant="light" size="sm" title="카운터 도착 확인">도착 {e.arrivedAt.slice(11, 16)}</Badge> : <><Unarrived left={e.arrivalLeft} onZero={load} /><Button size="compact-xs" color="green" onClick={(ev) => { ev.stopPropagation(); run(e, 'arrive'); }}>도착 확인</Button></>}
                   </span>
                   {e.visits !== null && <Text fz="xs" c="dimmed" title={`최근 ${visitMonths}개월 동안 레인 배정을 받은 날 수`}>{visitMonths}개월 {e.visits ? e.visits + '회 방문' : '첫 방문'}</Text>}
                   <Text fz="xs" c="dimmed" className="hidden max-[760px]:block">{e.createdAt.slice(11, 16)}{e.phone && <> · <Rv type="entry" id={e.id} masked={e.phone} /></>}</Text>
@@ -207,8 +209,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
               {e.id === selected && (
                 <div className={`flex flex-wrap items-center gap-2 px-4 min-[1001px]:px-6 py-3 border-t ${BORDER} bg-[var(--mantine-color-teal-light)]`}>
                   <div className="flex gap-1 items-center flex-wrap text-[var(--mantine-color-teal-8)] font-bold"><LuUser /> {e.name}</div><Sep />
-                  {e.status === 'WAITING' && <Button color="orange" onClick={() => run(e, 'call')}>호출</Button>}
-                  {!e.arrivedAt && <Button color="green" variant="light" onClick={() => run(e, 'arrive')}>수동 도착</Button>}
+                  {!e.arrivedAt && <Button color="green" variant="light" onClick={() => run(e, 'arrive')}>도착 확인</Button>}
                   <Button color="teal" onClick={() => run(e, 'assign')}>레인배정</Button>
                   <Button variant="default" title="한 칸 뒤로" onClick={() => run(e, 'yield')}>양보하기</Button>
                   <Button variant="default" onClick={() => run(e, 'tail')}>맨뒤로보내기</Button>
@@ -226,10 +227,10 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
         </div>
       </Paper>
 
-      {/* 도착 만료: 접수 후 10분 안에 도착 인증을 하지 않은 오늘의 건. 매장에 와 있으면 수동 도착으로 되살린다 */}
+      {/* 도착 만료: 접수 후 10분 안에 도착 인증을 하지 않은 오늘의 건. 매장에 와 있으면 도착 확인으로 되살린다 */}
       {expired.length > 0 && (
         <Paper withBorder radius="lg" className="mt-4 overflow-hidden">
-          <div className="px-5 py-3 bg-[var(--mantine-color-default-hover)]"><Text fw={700}>도착 만료 {expired.length}팀 <Text span c="dimmed" fz="sm">· 오늘, 접수 후 10분 안에 도착 인증을 하지 않은 건</Text></Text></div>
+          <div className="px-5 py-3 bg-[var(--mantine-color-default-hover)]"><Text fw={700}>도착 만료 {expired.length}팀 <Text span c="dimmed" fz="sm">· 오늘, 접수 후 제한 시간 안에 도착 확인을 받지 못한 건</Text></Text></div>
           <Table.ScrollContainer minWidth={520}>
             <Table verticalSpacing="sm">
               <Table.Tbody>
@@ -239,7 +240,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
                     <Table.Td className="font-mono">{e.createdAt.slice(11, 16)} 접수</Table.Td>
                     <Table.Td>{e.phone ? <Rv type="entry" id={e.id} masked={e.phone} /> : '—'}</Table.Td>
                     <Table.Td>{e.partySize}명</Table.Td>
-                    <Actions><Button color="green" variant="light" size="xs" onClick={() => run(e, 'arrive')}>수동 도착(대기 복구)</Button></Actions>
+                    <Actions><Button color="green" variant="light" size="xs" onClick={() => run(e, 'arrive')}>도착 확인(대기 복구)</Button></Actions>
                   </Table.Tr>
                 ))}
               </Table.Tbody>

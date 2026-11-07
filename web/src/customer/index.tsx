@@ -29,9 +29,6 @@ function App() {
   const [err, setErr] = useState('');
 
   const params = new URLSearchParams(location.search);
-  // QR 도착 인증 결과(/?arrived=...)는 한 번 보여 주고 주소에서 지운다
-  const [arrivedMsg] = useState(() => ARRIVED[params.get('arrived') ?? '']);
-  useEffect(() => { if (params.get('arrived')) history.replaceState(null, '', '/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const clearToken = () => { store.clear(); setToken(null); };
 
@@ -98,7 +95,7 @@ function App() {
   const logged = !!me.user;
   const verified = logged && !!me.user!.phone;
   const needConsent = logged && (me.consent?.missing || []).length > 0;
-  // 접수 중지·시간대 밖이면 접수 단계를 보여주지 않는다. 접수는 공개이고 QR은 도착 인증용이다
+  // 접수 중지·시간대 밖이면 접수 단계를 보여주지 않는다. 접수는 공개이고 QR은 이 주소를 여는 용도다
   const blocked = !me.intake.open
     ? (me.intake.window ? '접수 가능 시간은 ' + me.intake.window + '입니다.' : '지금은 접수 중이 아닙니다.')
     : '';
@@ -112,11 +109,10 @@ function App() {
         {banners.map((b) => <Image key={b.id} src={`/banner/${b.id}`} alt="이벤트" loading="lazy" radius="md" />)}
       </div>
 
-      {arrivedMsg && <Alert color={arrivedMsg.color} role="status" className="mb-4">{arrivedMsg.text}</Alert>}
       {entry ? (
         <>
           {logged && <UserBar me={me} onDone={userDone} />}
-          <StatusCard entry={entry} onCancel={cancel} onAgain={() => setEntry(null)} onExpire={refresh} />
+          <StatusCard entry={entry} limit={me.arrivalLimitMin} onCancel={cancel} onAgain={() => setEntry(null)} onExpire={refresh} />
         </>
       ) : (
         <>
@@ -133,7 +129,7 @@ function App() {
             </Card>
           )}
           {!blocked && logged && !verified && !needConsent && (
-            <PhoneVerify hint="대기 호출을 받으려면 휴대전화 인증이 필요합니다. 한 번만 인증하면 됩니다." onVerified={reload} onForbidden={reload} />
+            <PhoneVerify hint="대기 접수를 하려면 휴대전화 인증이 필요합니다. 한 번만 인증하면 됩니다." onVerified={reload} onForbidden={reload} />
           )}
           {!blocked && verified && !needConsent && (
             <Card component="form" onSubmit={submit}>
@@ -154,7 +150,10 @@ function App() {
       data={Array.from({ length: party + 1 }, (_, i) => ({ value: String(i), label: i === 0 ? '대여 안함' : i + '명' }))} />
                   <Button variant="default" size="md" onClick={() => { setShoesTouched(true); setShoes(0); }}>전체 대여 안함</Button>
                 </div>
-                <FarNotice />
+                <Alert color="blue" role="note">
+                  접수 후 <b>{me.arrivalLimitMin}분 안에 카운터에서 도착 확인</b>을 받지 않으면 대기가 자동으로 만료됩니다. 접수 후 바로 매장으로 오셔서 직원에게 말씀해 주세요.
+                </Alert>
+                <FarNotice limit={me.arrivalLimitMin} />
                 <Button type="submit" size="md" fullWidth>대기 접수</Button>
                 {err && <Text c="red" role="alert">{err}</Text>}
               </div>
@@ -171,48 +170,36 @@ function App() {
 }
 
 /** 접수 폼이 보일 때만 위치를 확인한다. 멀어도 접수는 막지 않고 안내만 보여 준다(PRD 4.3). */
-function FarNotice() {
+function FarNotice({ limit }: { limit: number }) {
   const distance = useStoreDistance(true);
   if (distance === null || distance <= ALLOWED_RADIUS_M) return null;
   return (
     <Alert color="yellow" role="status">
-      매장에서 약 {formatDistance(distance)} 떨어져 있습니다. 접수 후 10분 안에 매장에서 QR을 스캔하지 않으면 대기가 도착 만료됩니다.
+      매장에서 약 {formatDistance(distance)} 떨어져 있습니다. 접수 후 {limit}분 안에 카운터에서 도착 확인을 받지 않으면 대기가 만료됩니다.
     </Alert>
   );
 }
 
-const ARRIVED: Record<string, { color: string; text: string }> = {
-  ok: { color: 'green', text: '도착 인증이 완료되었습니다. 직원이 부를 때까지 매장에서 기다려 주세요.' },
-  already: { color: 'blue', text: '이미 도착 인증이 되어 있습니다.' },
-  none: { color: 'yellow', text: '대기 접수 내역이 없습니다. 먼저 대기 접수를 해 주세요.' },
-  expired: { color: 'yellow', text: '접수 후 10분이 지나 도착 만료되었습니다. 다시 접수해 주세요.' },
-  invalid: { color: 'red', text: '만료되었거나 올바르지 않은 QR 코드입니다. 매장의 최신 QR 코드를 다시 스캔해 주세요.' },
-  login: { color: 'yellow', text: '도착 인증을 하려면 먼저 로그인해 주세요. 로그인하면 자동으로 이어서 인증합니다.' },
-};
-
-/** 도착 인증 안내: 접수 후 10분 안에 매장 QR을 스캔해야 한다 */
+/** 도착 확인 안내: 접수 후 정해진 시간 안에 카운터에서 직원에게 도착 확인을 받아야 한다 */
 function ArrivalNotice({ entry: e, onExpire }: { entry: PublicEntry; onExpire: () => void }) {
   const left = useCountdown(e.arrivalLeft, () => setTimeout(onExpire, 1200));
   if (e.arrived) return <Alert color="green" className="mt-3">도착 확인됨 · 직원이 부를 때까지 매장에서 기다려 주세요.</Alert>;
   return (
     <Alert color="yellow" className="mt-3" role="status">
-      매장에 도착하면 매장의 QR 코드를 스캔해 주세요.{left !== null && <> <b>{mmss(left)}</b> 안에 인증하지 않으면 대기가 만료됩니다.</>}
+      매장에 도착하면 카운터에서 직원에게 말씀해 도착 확인을 받아 주세요.{left !== null && <> <b>{mmss(left)}</b> 안에 확인받지 않으면 대기가 만료됩니다.</>}
     </Alert>
   );
 }
 
-function StatusCard({ entry: e, onCancel, onAgain, onExpire }: { entry: PublicEntry; onCancel: () => void; onAgain: () => void; onExpire: () => void }) {
+function StatusCard({ entry: e, limit, onCancel, onAgain, onExpire }: { entry: PublicEntry; limit: number; onCancel: () => void; onAgain: () => void; onExpire: () => void }) {
   const who = `${e.name}님 · ${e.partySize}명` + (e.shoes === null ? '' : e.shoes ? ` · 신발 ${e.shoes}명` : ' · 신발 대여 안함');
   let main = '';
   let sub: ReactNode = '';
-  let called = false;
   if (e.status === 'WAITING') {
     main = `${e.position}번째`;
-    sub = e.position === 1 ? '곧 호출됩니다. 매장 근처에서 대기해 주세요.' : `앞에 ${(e.position ?? 1) - 1}팀이 대기 중입니다.`;
+    sub = e.position === 1 ? '곧 직원이 부릅니다. 매장에서 기다려 주세요.' : `앞에 ${(e.position ?? 1) - 1}팀이 대기 중입니다.`;
   } else if (e.status === 'EXPIRED') {
-    main = '도착 만료'; sub = <>접수 후 10분 안에 매장에서 QR을 스캔하지 않아 대기가 만료되었습니다.<br /><Anchor component="button" type="button" onClick={onAgain}>다시 접수하기</Anchor></>;
-  } else if (e.status === 'CALLED') {
-    main = '호출되었습니다'; called = true; sub = '프런트로 와주세요.';
+    main = '도착 만료'; sub = <>접수 후 {limit}분 안에 카운터에서 도착 확인을 받지 않아 대기가 만료되었습니다.<br /><Anchor component="button" type="button" onClick={onAgain}>다시 접수하기</Anchor></>;
   } else if (e.status === 'ASSIGNED') {
     main = `${e.lanes}번 레인`;
     sub = <>배정되었습니다. 즐거운 시간 되세요!<br /><Anchor component="button" type="button" onClick={onAgain}>새로 접수하기</Anchor></>;
@@ -223,10 +210,10 @@ function StatusCard({ entry: e, onCancel, onAgain, onExpire }: { entry: PublicEn
   return (
     <Card>
       <Text ta="center" c="dimmed">{who}</Text>
-      <Text ta="center" fz={44} fw={700} c={called ? 'orange' : undefined} className="my-2.5">{main}</Text>
+      <Text ta="center" fz={44} fw={700} className="my-2.5">{main}</Text>
       <Text ta="center" c="dimmed" component="div">{sub}</Text>
-      {(e.status === 'WAITING' || e.status === 'CALLED') && <ArrivalNotice entry={e} onExpire={onExpire} />}
-      {(e.status === 'WAITING' || e.status === 'CALLED') && <Button variant="default" fullWidth size="md" onClick={onCancel} className="mt-4">대기 취소</Button>}
+      {e.status === 'WAITING' && <ArrivalNotice entry={e} onExpire={onExpire} />}
+      {e.status === 'WAITING' && <Button variant="default" fullWidth size="md" onClick={onCancel} className="mt-4">대기 취소</Button>}
     </Card>
   );
 }

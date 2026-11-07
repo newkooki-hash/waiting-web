@@ -2,9 +2,9 @@ import { createContext, useContext, useEffect, useState, type ChangeEvent, type 
 import { Anchor, Button, Modal, Paper, Table, Text, TextInput, Title, type PaperProps } from '@mantine/core';
 import { post } from '../lib/api';
 
-export const STATUS: Record<string, string> = { WAITING: '대기', CALLED: '호출됨', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소', EXPIRED: '도착 만료' };
-/** 상태별 색: 대기=청록, 호출=주황, 배정·종료=파랑, 취소=빨강 */
-export const STATUS_COLOR: Record<string, string> = { WAITING: 'teal', CALLED: 'orange', ASSIGNED: 'blue', FINISHED: 'blue', CANCELED: 'red', EXPIRED: 'gray' };
+export const STATUS: Record<string, string> = { WAITING: '대기', ASSIGNED: '배정', FINISHED: '종료', CANCELED: '취소', EXPIRED: '도착 만료' };
+/** 상태별 색: 대기=청록, 배정·종료=파랑, 취소=빨강, 도착 만료=회색 */
+export const STATUS_COLOR: Record<string, string> = { WAITING: 'teal', ASSIGNED: 'blue', FINISHED: 'blue', CANCELED: 'red', EXPIRED: 'gray' };
 
 /** <input value onChange> 한 쌍을 state와 묶는다 */
 export const bind = (value: string, set: (v: string) => void) => ({
