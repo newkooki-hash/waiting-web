@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
-const pages = ['index', 'admin', 'tournament', 'calendar', 'notice', 'policy'];
+const pages = ['home', 'index', 'admin', 'tournament', 'calendar', 'notice', 'policy'];
 
 // 개발 중에는 vite(5173)가 화면을, 실제 서버(3000)가 API를 맡는다. 서버의 쪽 주소(/terms 등)도 같은 방식으로 넘긴다.
 export default defineConfig({

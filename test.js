@@ -49,11 +49,11 @@ mock.listen(0, () => server.listen(0, async () => {
     const start = await call('GET', '/auth/kakao', null, { raw: true });
     assert.equal(start.status, 302);
     assert.match(start.location, /^https:\/\/kauth\.kakao\.com\/oauth\/authorize\?.*client_id=cid/);
-    assert.equal((await call('GET', '/auth/kakao/callback?code=c&state=wrong', null, { raw: true })).location, '/?login=failed');
+    assert.equal((await call('GET', '/auth/kakao/callback?code=c&state=wrong', null, { raw: true })).location, '/waiting?login=failed');
     // 실패한 시도는 state 쿠키를 지우므로 다시 시작
     const state2 = new URL((await call('GET', '/auth/kakao', null, { raw: true })).location).searchParams.get('state');
     const cb = await call('GET', `/auth/kakao/callback?code=c&state=${state2}`, null, { raw: true });
-    assert.equal(cb.location, '/');
+    assert.equal(cb.location, '/waiting');
     assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동');
 
     // --- 접수는 공개(QR 불필요). QR은 공개 접수 주소만 담고, 도착 확인은 카운터에서 직원이 한다 ---
@@ -133,7 +133,7 @@ mock.listen(0, () => server.listen(0, async () => {
       const st = new URL((await call('GET', `/auth/${p}`, null, { raw: true })).location).searchParams.get('state');
       return call('GET', `/auth/${p}/callback?code=c&state=${st}`, null, { raw: true });
     };
-    assert.equal((await socialLogin('naver')).location, '/');
+    assert.equal((await socialLogin('naver')).location, '/waiting');
     const nm = (await call('GET', '/api/me')).body;
     assert.deepEqual([nm.user.provider, nm.user.phone], ['naver', null]); // 새 네이버 계정, 번호는 아직 없음
     const resetSms = () => server.db.prepare('DELETE FROM sms_codes WHERE phone=?').run(server.ep('01011112222')); // 번호당 하루 한도 초기화
@@ -150,7 +150,7 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal(merged.activeToken, a.body.token); // 카카오로 접수한 대기를 네이버 로그인에서도 본다
     assert.equal(server.db.prepare("SELECT COUNT(*) n FROM users WHERE phone=?").get(server.ep('01011112222')).n, 1);
     delete jar.sid;
-    assert.equal((await socialLogin('kakao')).location, '/'); // 카카오로 다시 로그인해도 같은 회원
+    assert.equal((await socialLogin('kakao')).location, '/waiting'); // 카카오로 다시 로그인해도 같은 회원
     assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token);
     assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동');
     // 같은 플랫폼의 다른 계정은 같은 번호를 쓸 수 없다(합치지 않는다)
@@ -549,6 +549,35 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/banners/remove', { id: b1 })).status, 200);
     assert.deepEqual(await ids(), [b2]);
     assert.equal((await call('POST', '/api/admin/banners/remove', { id: b1 })).status, 404);
+    // --- 공개 메인 화면(/): 접수 상태·대기 팀 수·대회신청 버튼 상태 ---
+    assert.equal((await tour({ eventAt: ts(60 * 24), applyStart: ts(60 * 12), applyEnd: ts(60 * 25) })).status, 400); // 신청 종료가 대회 일시보다 늦으면 저장 불가
+    const homeNow = (await call('GET', '/api/home')).body;
+    assert.match(homeNow.now, /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+    assert.deepEqual([homeNow.intake.open, typeof homeNow.waitingTeams], [true, 'number']);
+    assert.equal(homeNow.waitingTeams, (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status === 'WAITING').length);
+    // 접수중 > 접수 마감(대회일 전) > 접수 예정 > 일정 없음. 목록과 시각을 직접 넣어 계산만 확인한다
+    const T = (id, start, end, event = '2999-12-30 10:00') => ({ id, name: '대회' + id, event_at: event, apply_start: start, apply_end: end, capacity: 10 });
+    const NOW = '2026-11-08 12:00';
+    const ht = (list) => server.homeTournament(list, NOW);
+    assert.equal(ht([]).state, 'none');
+    assert.deepEqual([ht([T(1, '2026-11-20 10:00', '2026-11-25 10:00')]).state, ht([T(1, '2026-11-20 10:00', '2026-11-25 10:00')]).applyStart], ['upcoming', '2026-11-20 10:00']); // 비활성이어도 오픈 시각을 준다
+    assert.equal(ht([T(1, '2026-11-01 10:00', '2026-11-30 10:00')]).state, 'open');
+    assert.equal(ht([T(1, '2026-11-01 10:00', '2026-11-05 10:00')]).state, 'closed');
+    const both = ht([T(1, '2026-11-01 10:00', '2026-11-05 10:00'), T(2, '2026-12-01 10:00', '2026-12-05 10:00')]);
+    assert.deepEqual([both.state, both.next.applyStart], ['closed', '2026-12-01 10:00']); // 마감 상태에는 다음 오픈 시각
+    assert.equal(ht([T(1, '2026-11-01 10:00', '2026-11-05 10:00'), T(2, '2026-11-07 10:00', '2026-11-30 10:00')]).state, 'open'); // 접수중이 우선
+    assert.equal(ht([T(1, '2026-11-01 10:00', '2026-11-05 10:00', '2026-11-06 10:00')]).state, 'none'); // 대회일이 지나면 숨김
+    assert.equal(ht([T(1, '2026-11-01 10:00', '2026-11-30 10:00'), T(2, '2026-11-02 10:00', '2026-11-20 10:00')]).name, '대회2'); // 먼저 마감되는 접수중 대회
+    // 서버가 실제로 쓰는 대회 목록으로도 한 번 확인(앞에서 만든 대회가 접수중)
+    assert.equal((await call('GET', '/api/home')).body.tournament.state, 'open');
+    // 접수 시간 밖에는 직접 주소로도 신청할 수 없다
+    const closedT = (await tour({ name: '마감 시험', eventAt: ts(60 * 24 * 9), applyStart: ts(-120), applyEnd: ts(-60) })).body.id;
+    assert.equal((await call('POST', `/api/tournaments/${closedT}/apply`)).status === 201, false);
+    // 페이지: /는 메인, /waiting은 접수 화면(빌드 결과가 있을 때만 확인)
+    if (require('node:fs').existsSync(require('node:path').join(__dirname, 'dist', 'home.html'))) {
+      assert.ok((await (await fetch(base + '/')).text()).includes('<title>오란다 볼링파크</title>'));
+      assert.ok((await (await fetch(base + '/waiting')).text()).includes('<title>오란다 볼링 대기 접수</title>'));
+    }
     // --- 통계 ---
     assert.equal((await fetch(base + '/api/admin/stats')).status, 401);
     assert.equal((await call('GET', '/api/admin/stats?from=2026-12-31&to=2026-01-01')).status, 400);
@@ -687,10 +716,10 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('GET', '/auth/kakao', null, { raw: true })).status, 302);
     mockId = 5001; await call('POST', '/api/logout');
     const stW = new URL((await call('GET', '/auth/kakao', null, { raw: true })).location).searchParams.get('state');
-    assert.equal((await call('GET', `/auth/kakao/callback?code=c&state=${stW}`, null, { raw: true })).location, '/?login=withdrawn');
+    assert.equal((await call('GET', `/auth/kakao/callback?code=c&state=${stW}`, null, { raw: true })).location, '/waiting?login=withdrawn');
     assert.equal((await call('GET', '/api/me')).body.user, null);
     naverId = 'nv901'; delete jar.sid; // 통합회원이었으므로 연결된 네이버 계정으로도 재가입이 막힌다
-    assert.equal((await socialLogin('naver')).location, '/?login=withdrawn');
+    assert.equal((await socialLogin('naver')).location, '/waiting?login=withdrawn');
     assert.equal((await call('GET', '/api/me')).body.user, null);
     await login(5002); // 다른 소셜 계정이어도 번호가 같으면 막는다
     const rejoin = await call('POST', '/api/phone/send', { phone: '01055550001' });

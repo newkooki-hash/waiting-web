@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Anchor, Button, Text, Title } from '@mantine/core';
 import { LuChevronLeft, LuChevronRight } from 'react-icons/lu';
-import { Card, Page, mount } from './common';
+import { Card, InfoTabs, Page, mount } from './common';
 import { DOW, shiftMonth, today } from '../lib/api';
 
 interface CalEvent { date: string; title: string; memo: string }
@@ -17,8 +17,9 @@ function App() {
 
   return (
     <Page title="오란다 볼링 행사 일정">
-      <Title order={3} className="mb-4">행사 일정</Title>
-      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
+      <Title order={3} className="mb-3">공지 및 일정</Title>
+      <InfoTabs active="calendar" />
+      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 처음으로</Anchor></Text>
       <div className="flex gap-4 items-center justify-between flex-wrap mb-3">
         <Button variant="default" aria-label="이전 달" leftSection={<LuChevronLeft />} onClick={() => setMonth(shiftMonth(month, -1))}>이전</Button>
         <Text fw={700}>{month.slice(0, 4)}년 {Number(month.slice(5))}월</Text>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { ActionIcon, Alert, Anchor, Button, Image, Text, TextInput, Title } from '@mantine/core';
+import { ActionIcon, Alert, Anchor, Button, Text, TextInput, Title } from '@mantine/core';
 import { LuMinus, LuPlus } from 'react-icons/lu';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
@@ -20,7 +20,6 @@ function App() {
   const { me, reload } = useMe();
   const [token, setToken] = useState<string | null>(store.get);
   const [entry, setEntry] = useState<PublicEntry | null>(null);
-  const [banners, setBanners] = useState<{ id: number }[]>([]);
   const [name, setName] = useState('');
   const [party, setParty] = useState(1);
   const [shoes, setShoes] = useState(1);
@@ -49,7 +48,6 @@ function App() {
 
   useEffect(() => { if (me) refresh(); }, [me, refresh]);
   useEvents(() => refresh());
-  useEffect(() => { fetch('/api/banners').then((r) => r.json()).then((b) => setBanners(b.banners)); }, []);
 
   // 로그인 정보가 들어오면 이름과 지난 접수 값을 기본으로 채운다
   useEffect(() => {
@@ -86,11 +84,11 @@ function App() {
   const userDone = (kind: 'logout' | 'withdraw') => {
     clearToken(); setEntry(null);
     if (kind === 'withdraw') { location.href = '/'; return; }
-    history.replaceState(null, '', '/');
+    history.replaceState(null, '', '/waiting');
     reload();
   };
 
-  const heading = <Title order={3} className="mb-4">오란다 볼링 대기 접수</Title>;
+  const heading = <><Text c="dimmed" fz="sm" className="mb-2"><Anchor href="/" c="dimmed">← 처음으로</Anchor></Text><Title order={3} className="mb-4">오란다 볼링 대기 접수</Title></>;
   if (!me) return <Page title="오란다 볼링 대기 접수">{heading}</Page>;
 
   const logged = !!me.user;
@@ -106,9 +104,6 @@ function App() {
   return (
     <Page title="오란다 볼링 대기 접수">
       {heading}
-      <div className="flex flex-col gap-2 mb-4">
-        {banners.map((b) => <Image key={b.id} src={`/banner/${b.id}`} alt="이벤트" loading="lazy" radius="md" />)}
-      </div>
 
       {entry ? (
         <>
@@ -154,9 +149,6 @@ function App() {
         </>
       )}
 
-      <Text ta="center" c="dimmed" fz="sm" className="mt-5">
-        <Anchor href="/tournament" c="dimmed">정기 대회 신청 →</Anchor> · <Anchor href="/calendar" c="dimmed">행사 일정 →</Anchor> · <Anchor href="/notice" c="dimmed">공지사항 →</Anchor>
-      </Text>
     </Page>
   );
 }
@@ -211,7 +203,7 @@ function StatusCard({ entry: e, limit, onCancel, onAgain, onExpire }: { entry: P
     sub = <>배정되었습니다. 즐거운 시간 되세요!<br /><Anchor component="button" type="button" onClick={onAgain}>새로 접수하기</Anchor></>;
   } else {
     main = e.status === 'FINISHED' ? '이용이 끝났습니다' : '대기가 취소되었습니다';
-    sub = <Anchor href="/">새로 접수하기</Anchor>;
+    sub = <Anchor href="/waiting">새로 접수하기</Anchor>;
   }
   return (
     <Card>

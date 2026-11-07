@@ -681,6 +681,16 @@ const api = {
     const r = db.prepare("DELETE FROM withdrawals WHERE phone_hash=? AND blocked_until > datetime('now','localtime')").run(idHash('phone', phone));
     json(res, r.changes ? 200 : 404, r.changes ? { ok: true } : { error: '제한 중인 번호가 아닙니다.' });
   },
+  // 공개 메인 화면용 상태: 접수 상태, 대기 팀 수, 대회신청 버튼 상태. 개인정보는 없다
+  'GET /api/home': async (req, res) => {
+    expireUnarrived();
+    json(res, 200, {
+      now: new Date().toLocaleString('sv'), // 화면이 시작·마감 시각까지 남은 시간을 서버 시각으로 계산한다
+      intake: { open: intakeOpen(), window: outsideWindow() },
+      waitingTeams: db.prepare("SELECT COUNT(*) n FROM entries WHERE status='WAITING'").get().n,
+      tournament: homeTournament(),
+    });
+  },
   'GET /api/notices': async (req, res) => json(res, 200, { notices: noticeRows() }),
   'GET /api/banners': async (req, res) => json(res, 200, { banners: bannerIds() }),
   'GET /api/admin/notices': async (req, res) => {
@@ -1238,6 +1248,21 @@ const tournamentView = (t, userId) => {
     waitlist: db.prepare("SELECT COUNT(*) n FROM tournament_entries WHERE tournament_id=? AND status='WAITLIST'").get(t.id).n,
   };
 };
+// 메인 화면 `대회신청` 버튼의 상태(PRD 5.1.1). 우선순위: 접수중 > 접수 마감(대회일 전) > 접수 예정 > 일정 없음.
+// 마감 상태에는 다음에 열리는 대회가 있으면 같이 알려 준다. 목록과 시각을 받아 순수하게 계산한다(시험하기 쉽게).
+const homeTournament = (list = db.prepare('SELECT * FROM tournaments').all(), now = nowTs()) => {
+  const alive = list.filter((t) => !eventEnded(t));
+  const view = (t, state, extra = {}) => ({ state, name: t.name, applyStart: t.apply_start, applyEnd: t.apply_end, eventAt: t.event_at, full: seatsTaken(t.id) >= t.capacity, ...extra });
+  const by = (key, dir = 1) => (a, b) => dir * a[key].localeCompare(b[key]);
+  const win = (w) => alive.filter((t) => applyWindow(t, now) === w);
+  const open = win('open').sort(by('apply_end'))[0];
+  if (open) return view(open, 'open');
+  const upcoming = win('before').sort(by('apply_start'));
+  const closed = win('closed').sort(by('apply_end', -1))[0];
+  if (closed) return view(closed, 'closed', { next: upcoming[0] ? { name: upcoming[0].name, applyStart: upcoming[0].apply_start } : null });
+  if (upcoming[0]) return view(upcoming[0], 'upcoming');
+  return { state: 'none' };
+};
 const tournamentEntryView = (e) => ({
   id: e.id, name: e.name, phone: maskPhone(dp(e.phone)), status: e.status, appliedAt: e.applied_at, paidAt: e.paid_at || '',
   deletedAt: e.deleted_at || '', deleteReason: e.delete_reason || '', refundMemo: e.refund_memo || '', manual: e.user_id === null,
@@ -1306,6 +1331,7 @@ async function handleTournaments(req, res, url) {
     if (!f.name) return json(res, 400, { error: '대회명을 입력하세요.' }), true;
     if (![f.eventAt, f.applyStart, f.applyEnd].every((v) => TS.test(v))) return json(res, 400, { error: '일시를 확인하세요.' }), true;
     if (f.applyStart >= f.applyEnd) return json(res, 400, { error: '신청 종료는 시작보다 늦어야 합니다.' }), true;
+    if (f.applyEnd > f.eventAt) return json(res, 400, { error: '신청 종료는 대회 일시보다 늦을 수 없습니다.' }), true;
     if (!Number.isInteger(f.capacity) || f.capacity < 1 || f.capacity > 500) return json(res, 400, { error: '정원은 1~500명입니다.' }), true;
     if (!Number.isInteger(f.fee) || f.fee < 0) return json(res, 400, { error: '참가비를 확인하세요.' }), true;
     let id = Number(b.id);
@@ -1423,7 +1449,7 @@ const server = http.createServer(async (req, res) => {
     let m;
     if (req.method === 'GET' && (m = url.pathname.match(/^\/auth\/(kakao|naver)(\/callback)?$/))) {
       const name = m[1];
-      if (!oauth.enabled().includes(name)) return redirect(res, '/?login=disabled');
+      if (!oauth.enabled().includes(name)) return redirect(res, '/waiting?login=disabled');
       if (!m[2]) {
         const state = crypto.randomBytes(16).toString('hex');
         const next = url.searchParams.get('next') === 'tournament' ? [`login_next=tournament; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${SECURE}`] : [];
@@ -1433,12 +1459,12 @@ const server = http.createServer(async (req, res) => {
       const state = url.searchParams.get('state');
       const clear = `oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`;
       if (!state || cookie(req, 'oauth_state') !== `${name}.${state}` || !url.searchParams.get('code'))
-        return redirect(res, '/?login=failed', [clear]);
+        return redirect(res, '/waiting?login=failed', [clear]);
       let profile;
       try { profile = await oauth.fetchProfile(name, url.searchParams.get('code'), state); }
-      catch (err) { console.error(name, 'login failed:', err.message); return redirect(res, '/?login=failed', [clear]); }
+      catch (err) { console.error(name, 'login failed:', err.message); return redirect(res, '/waiting?login=failed', [clear]); }
       let uid = identityOwner(name, profile.id);
-      if (!uid && rejoinBlockedUntil({ providerKey: `${name}:${profile.id}` })) return redirect(res, '/?login=withdrawn', [clear]);
+      if (!uid && rejoinBlockedUntil({ providerKey: `${name}:${profile.id}` })) return redirect(res, '/waiting?login=withdrawn', [clear]);
       if (uid) db.prepare('UPDATE users SET name=? WHERE id=? AND provider=?').run(profile.name || '손님', uid, name); // 이름은 처음 가입한 플랫폼의 값만 갱신
       else {
         uid = Number(db.prepare('INSERT INTO users (provider,provider_id,name) VALUES (?,?,?)').run(name, profile.id, profile.name || '손님').lastInsertRowid);
@@ -1448,7 +1474,7 @@ const server = http.createServer(async (req, res) => {
       touchUser(u.id);
       const sid = crypto.randomBytes(24).toString('hex');
       db.prepare('INSERT INTO user_sessions (token,user_id) VALUES (?,?)').run(sid, u.id);
-      const back = cookie(req, 'login_next') === 'tournament' ? '/tournament' : '/';
+      const back = cookie(req, 'login_next') === 'tournament' ? '/tournament' : '/waiting';
       return redirect(res, back, [clear, `login_next=; Path=/; Max-Age=0${SECURE}`, `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7776000${SECURE}`]);
     }
     if (req.method === 'GET' && (m = url.pathname.match(/^\/banner\/(\d+)$/))) {
@@ -1476,7 +1502,7 @@ const server = http.createServer(async (req, res) => {
       return await handleAction(req, res, Number(m[1]), m[2]);
 
     if (req.method === 'GET') {
-      const page = { '/': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html', '/notice': 'notice.html', '/terms': 'policy.html', '/privacy': 'policy.html' }[url.pathname];
+      const page = { '/': 'home.html', '/waiting': 'index.html', '/admin': 'admin.html', '/tournament': 'tournament.html', '/calendar': 'calendar.html', '/notice': 'notice.html', '/terms': 'policy.html', '/privacy': 'policy.html' }[url.pathname];
       const file = page || url.pathname.slice(1);
       const full = path.join(PUBLIC, file);
       if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {
@@ -1506,6 +1532,7 @@ if (require.main === module) {
 server.oauth = oauth;
 server.purgeExpired = purgeExpired;
 server.expireUnarrived = expireUnarrived;
+server.homeTournament = homeTournament;
 server.encryptExistingPhones = encryptExistingPhones;
 server.ep = ep;
 server.db = db;

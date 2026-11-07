@@ -48,7 +48,7 @@ export function Intake({ intake, reload }: { intake: IntakeInfo | null; reload: 
 
   return (
     <section>
-      <Heading title="QR 관리" sub="손님이 스캔하면 대기 접수 화면이 열리는 QR입니다. 도착 확인은 카운터에서 직원이 대기 현황의 '도착 확인' 버튼으로 합니다." />
+      <Heading title="QR 관리" sub="손님이 스캔하면 메인 화면이 열리는 QR입니다. 도착 확인은 카운터에서 직원이 대기 현황의 '도착 확인' 버튼으로 합니다." />
       <div className="grid gap-4 grid-cols-1 min-[48em]:grid-cols-2">
         <Panel className="print:border-0 print:text-center">
           <div className="inline-block bg-white p-2.5 rounded-lg leading-none [&_img]:w-[220px] [&_img]:h-[220px] print:[&_img]:w-[340px] print:[&_img]:h-[340px]" dangerouslySetInnerHTML={{ __html: qrHtml }} />
@@ -77,7 +77,7 @@ export function Intake({ intake, reload }: { intake: IntakeInfo | null; reload: 
           </Panel>
           <Panel>
             <Title order={5} className="mb-2.5">접수 주소</Title>
-            <Text c="dimmed" fz="sm">QR을 스캔하면 아래 주소의 대기 접수 화면이 열립니다. 주소가 바뀌지 않으므로 출력한 QR은 계속 쓸 수 있습니다.</Text>
+            <Text c="dimmed" fz="sm">QR을 스캔하면 아래 주소의 메인 화면(대기접수·공지 및 일정·대회신청)이 열립니다. 주소가 바뀌지 않으므로 출력한 QR은 계속 쓸 수 있습니다.</Text>
             <Text c="dimmed" fz="xs" className="mt-2.5 break-all">{intake.url}</Text>
           </Panel>
         </div>

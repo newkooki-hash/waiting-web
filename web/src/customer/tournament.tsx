@@ -47,7 +47,7 @@ function App() {
   return (
     <Page title="오란다 볼링 정기 대회 신청">
       {heading}
-      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
+      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 처음으로</Anchor></Text>
 
       {!logged && (
         <Card>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Accordion, Anchor, Text, Title } from '@mantine/core';
-import { Page, mount } from './common';
+import { InfoTabs, Page, mount } from './common';
 
 interface Notice { date: string; title: string; body: string }
 
@@ -10,8 +10,9 @@ function App() {
 
   return (
     <Page title="오란다 볼링 공지사항">
-      <Title order={3} className="mb-4">공지사항</Title>
-      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
+      <Title order={3} className="mb-3">공지 및 일정</Title>
+      <InfoTabs active="notice" />
+      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 처음으로</Anchor></Text>
       {notices && (notices.length ? (
         <Accordion variant="separated" radius="md">
           {notices.map((n, i) => (

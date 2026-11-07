@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Badge, Button, Table, Text, TextInput, Textarea, Title } from '@mantine/core';
 import { post } from '../lib/api';
+import { tournamentButton, type HomeTournament } from '../lib/tournamentButton';
 import { formDialog, promptDialog } from '../lib/dialogs';
 import { Actions, DataTable, EmptyRow, Heading, Meta, Msg, Panel, Rv, bind, useLoad } from './ui';
 
@@ -53,6 +54,11 @@ export function Tournaments() {
   const upcoming = list.filter((t) => !t.ended).sort((a, b) => a.eventAt.localeCompare(b.eventAt));
   const past = list.filter((t) => t.ended).sort((a, b) => b.eventAt.localeCompare(a.eventAt));
   const ordered = [...upcoming, ...past];
+  // 입력한 접수 기간으로 메인 화면 `대회신청` 버튼이 지금 어떻게 보일지 미리 보여 준다
+  const nowTs = new Date().toLocaleString('sv').slice(0, 16);
+  const [ps, pe] = [f.start.replace('T', ' '), f.end.replace('T', ' ')];
+  const preview = ps && pe ? tournamentButton({ state: nowTs < ps ? 'upcoming' : nowTs > pe ? 'closed' : 'open', applyStart: ps, applyEnd: pe } as HomeTournament) : null;
+  const orderWarn = ps && pe && f.event && !(ps < pe && pe <= f.event.replace('T', ' ')) ? '신청 시작 < 신청 종료 ≤ 대회 일시 순서여야 합니다.' : '';
   const open = list.find((t) => t.id === openId);
 
   return (
@@ -76,6 +82,8 @@ export function Tournaments() {
             <Button type="submit">저장</Button>
             {editId && <Button variant="default" onClick={reset}>새 대회로</Button>}
           </div>
+          {preview && <Text c="dimmed" fz="sm" className="mt-2">메인 화면 대회신청 버튼: <b>{preview.active ? '활성' : '비활성'}</b> · {preview.sub}</Text>}
+          {orderWarn && <Msg>{orderWarn}</Msg>}
           <Msg>{msg}</Msg>
         </form>
       </Panel>

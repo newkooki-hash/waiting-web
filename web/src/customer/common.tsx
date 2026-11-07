@@ -15,10 +15,20 @@ export function Page({ title, children }: { title?: string; children: ReactNode 
   return (
     <>
       <div className="bg-[var(--mantine-color-dark-8)] text-[var(--mantine-color-gray-0)] py-3">
-        <div className="mx-auto w-full max-w-[420px] px-4"><Text fw={700}>오란다 볼링파크</Text></div>
+        <div className="mx-auto w-full max-w-[420px] px-4"><Anchor href="/" c="inherit" underline="never"><Text fw={700}>오란다 볼링파크</Text></Anchor></div>
       </div>
       <div className="mx-auto w-full max-w-[420px] px-4 py-5">{children}</div>
     </>
+  );
+}
+
+/** 공지사항·행사 일정 화면 위의 탭(링크) */
+export function InfoTabs({ active }: { active: 'notice' | 'calendar' }) {
+  return (
+    <div className="flex gap-2 mb-4">
+      <Button component="a" href="/notice" fullWidth variant={active === 'notice' ? 'filled' : 'default'}>공지사항</Button>
+      <Button component="a" href="/calendar" fullWidth variant={active === 'calendar' ? 'filled' : 'default'}>행사 일정</Button>
+    </div>
   );
 }
 
