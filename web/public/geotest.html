@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>위치 확인 테스트</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; max-width: 520px; margin-inline: auto; line-height: 1.5; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 16px; color: #666; font-size: 14px; }
+  section { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  button { font-size: 16px; padding: 12px; width: 100%; margin-top: 8px; border-radius: 8px; border: 0; background: #1c7ed6; color: #fff; }
+  button.sec { background: #e9ecef; color: #222; }
+  label { display: block; font-size: 14px; margin-top: 8px; }
+  input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 8px; }
+  table { width: 100%; font-size: 14px; border-collapse: collapse; }
+  td { padding: 3px 0; vertical-align: top; }
+  td:first-child { color: #666; width: 38%; }
+  .ok { color: #2b8a3e; font-weight: 600; } .bad { color: #c92a2a; font-weight: 600; } .warn { color: #e67700; font-weight: 600; }
+  pre { white-space: pre-wrap; word-break: break-all; background: #f1f3f5; padding: 8px; border-radius: 8px; font-size: 12px; margin: 8px 0 0; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1b1e; color: #eee; } section { border-color: #444; } pre { background: #25262b; }
+    button.sec { background: #373a40; color: #eee; } p.sub, td:first-child { color: #aaa; } input { background: #25262b; color: #eee; border: 1px solid #555; }
+  }
+</style>
+</head>
+<body>
+<h1>위치 확인 테스트</h1>
+<p class="sub">카카오톡·네이버 앱 안에서 열었을 때와 Chrome·Safari에서 열었을 때를 각각 시험하고 결과 복사로 보내 주세요. 위치 값은 서버로 전송하거나 저장하지 않습니다.</p>
+
+<section>
+  <h2>1. 이 브라우저</h2>
+  <table id="env"></table>
+</section>
+
+<section>
+  <h2>2. 매장 좌표 (거리 계산용)</h2>
+  <label>위도 <input id="slat" inputmode="decimal" placeholder="예: 37.123456"></label>
+  <label>경도 <input id="slng" inputmode="decimal" placeholder="예: 127.123456"></label>
+  <button class="sec" id="setStore">현재 위치를 매장 좌표로 저장 (매장 안에서 누르기)</button>
+  <p class="sub" style="margin-top:8px">매장 안에서 한 번 저장해 두면 이 기기에서 거리를 계산합니다. 저장은 이 기기 브라우저에만 남습니다.</p>
+</section>
+
+<section>
+  <h2>3. 위치 요청</h2>
+  <button id="go">위치 확인하기 (1회)</button>
+  <button class="sec" id="watch">5회 연속 측정 (정확도 변화 보기)</button>
+  <table id="res" style="margin-top:10px"></table>
+</section>
+
+<section>
+  <h2>4. 결과 복사</h2>
+  <button class="sec" id="copy">결과 텍스트 만들기 / 복사</button>
+  <pre id="out">아직 측정하지 않았습니다.</pre>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const ua = navigator.userAgent;
+const kind = /KAKAOTALK/i.test(ua) ? '카카오톡 인앱' : /NAVER\(inapp/i.test(ua) ? '네이버 인앱' : /FBAN|FBAV|Instagram|Line\//i.test(ua) ? '기타 인앱' : /SamsungBrowser/i.test(ua) ? '삼성 인터넷' : /CriOS|Chrome/i.test(ua) ? 'Chrome' : /Safari/i.test(ua) ? 'Safari' : '알 수 없음';
+const log = { kind, ua, secure: window.isSecureContext, time: new Date().toLocaleString('ko-KR'), readings: [] };
+
+const row = (k, v, cls) => `<tr><td>${k}</td><td${cls ? ` class="${cls}"` : ''}>${v}</td></tr>`;
+function renderEnv(perm) {
+  $('env').innerHTML =
+    row('판별', kind) +
+    row('HTTPS', window.isSecureContext ? '예' : '아니오 (위치 사용 불가)', window.isSecureContext ? 'ok' : 'bad') +
+    row('위치 API', 'geolocation' in navigator ? '있음' : '없음', 'geolocation' in navigator ? 'ok' : 'bad') +
+    row('권한 상태', perm || '확인 불가') +
+    row('UA', `<span style="font-size:11px;word-break:break-all">${ua}</span>`);
+}
+renderEnv();
+if (navigator.permissions?.query) {
+  navigator.permissions.query({ name: 'geolocation' }).then((p) => { log.permission = p.state; renderEnv(p.state); }).catch(() => {});
+}
+
+// 매장 좌표
+const saved = JSON.parse(localStorage.getItem('geotest_store') || 'null');
+if (saved) { $('slat').value = saved.lat; $('slng').value = saved.lng; }
+const store = () => {
+  const lat = parseFloat($('slat').value), lng = parseFloat($('slng').value);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+};
+$('slat').oninput = $('slng').oninput = () => { const s = store(); if (s) localStorage.setItem('geotest_store', JSON.stringify(s)); };
+
+function dist(a, b) { // m, 하버사인
+  const R = 6371000, r = (x) => x * Math.PI / 180;
+  const dLat = r(b.lat - a.lat), dLng = r(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+const errName = { 1: 'PERMISSION_DENIED (권한 거부/차단)', 2: 'POSITION_UNAVAILABLE (위치 못 구함)', 3: 'TIMEOUT (시간 초과)' };
+const OPTS = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
+
+function show(p, startedAt) {
+  const c = p.coords, s = store();
+  const d = s ? Math.round(dist(s, { lat: c.latitude, lng: c.longitude })) : null;
+  const r = { ms: Date.now() - startedAt, lat: +c.latitude.toFixed(6), lng: +c.longitude.toFixed(6), acc: Math.round(c.accuracy), dist: d };
+  log.readings.push(r);
+  $('res').innerHTML =
+    row('결과', '성공', 'ok') + row('걸린 시간', `${r.ms}ms`) +
+    row('정확도(오차)', `약 ${r.acc}m`, r.acc <= 50 ? 'ok' : r.acc <= 150 ? 'warn' : 'bad') +
+    row('위도·경도', `${r.lat}, ${r.lng}`) +
+    row('매장까지 거리', d == null ? '매장 좌표 없음' : `약 ${d}m`) +
+    row('측정 횟수', log.readings.length);
+  render();
+}
+function fail(e, startedAt) {
+  log.error = { code: e.code, message: e.message, ms: Date.now() - startedAt };
+  $('res').innerHTML = row('결과', '실패', 'bad') + row('오류', errName[e.code] || e.code) + row('메시지', e.message || '-') + row('걸린 시간', `${Date.now() - startedAt}ms`);
+  render();
+}
+function once() {
+  if (!('geolocation' in navigator)) { $('res').innerHTML = row('결과', '위치 API 없음', 'bad'); return; }
+  $('res').innerHTML = row('결과', '요청 중… (권한 팝업이 뜨면 허용)');
+  const t = Date.now(); log.error = null;
+  navigator.geolocation.getCurrentPosition((p) => show(p, t), (e) => fail(e, t), OPTS);
+}
+$('go').onclick = once;
+$('setStore').onclick = () => {
+  const t = Date.now();
+  navigator.geolocation.getCurrentPosition((p) => {
+    $('slat').value = p.coords.latitude.toFixed(6); $('slng').value = p.coords.longitude.toFixed(6);
+    localStorage.setItem('geotest_store', JSON.stringify(store()));
+    alertText(`매장 좌표 저장됨 (오차 약 ${Math.round(p.coords.accuracy)}m)`);
+  }, (e) => fail(e, t), OPTS);
+};
+function alertText(m) { $('out').textContent = m; }
+
+$('watch').onclick = () => {
+  let n = 0; const t = Date.now();
+  $('res').innerHTML = row('결과', '연속 측정 중…');
+  const id = navigator.geolocation.watchPosition((p) => { show(p, t); if (++n >= 5) navigator.geolocation.clearWatch(id); }, (e) => { navigator.geolocation.clearWatch(id); fail(e, t); }, OPTS);
+  setTimeout(() => navigator.geolocation.clearWatch(id), 30000);
+};
+
+function render() {
+  const lines = [
+    `[위치 테스트 ${log.time}]`, `브라우저: ${log.kind}`, `HTTPS: ${log.secure}`, `권한상태: ${log.permission || '-'}`,
+    ...log.readings.map((r, i) => `#${i + 1} ${r.ms}ms 오차${r.acc}m 매장거리${r.dist == null ? '-' : r.dist + 'm'}`),
+    log.error ? `오류: ${errName[log.error.code] || log.error.code} / ${log.error.message}` : '',
+    `UA: ${log.ua}`,
+  ].filter(Boolean);
+  $('out').textContent = lines.join('\n');
+}
+$('copy').onclick = async () => {
+  render();
+  try { await navigator.clipboard.writeText($('out').textContent); $('copy').textContent = '복사됨'; }
+  catch { $('copy').textContent = '아래 글자를 길게 눌러 복사하세요'; }
+  setTimeout(() => { $('copy').textContent = '결과 텍스트 만들기 / 복사'; }, 2500);
+};
+</script>
+</body>
+</html>
