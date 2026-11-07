@@ -197,6 +197,34 @@ try { db.exec('ALTER TABLE users ADD COLUMN phone TEXT'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN phone_verified_at TEXT'); } catch {}
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_phone ON users(phone) WHERE phone IS NOT NULL');
 
+// 통합회원: 한 회원이 카카오·네이버 소셜 계정을 둘 다 연결할 수 있다.
+// 같은 번호를 SMS로 인증한 서로 다른 플랫폼 계정은 사용자가 동의하면 한 회원으로 합친다(번호 인증이 본인 확인 역할).
+db.exec(`CREATE TABLE IF NOT EXISTS user_identities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  UNIQUE (provider, provider_id)
+)`);
+db.exec('INSERT OR IGNORE INTO user_identities (user_id,provider,provider_id,created_at) SELECT id,provider,provider_id,created_at FROM users');
+try { db.exec('ALTER TABLE sms_codes ADD COLUMN verified_at INTEGER'); } catch {} // 번호 인증은 맞았지만 통합 확인을 기다리는 코드
+const identityOwner = (provider, pid) => db.prepare('SELECT user_id FROM user_identities WHERE provider=? AND provider_id=?').get(provider, pid)?.user_id;
+const providersOf = (userId) => db.prepare('SELECT provider FROM user_identities WHERE user_id=? ORDER BY id').all(userId).map((r) => r.provider);
+// 같은 플랫폼 계정끼리는 합치지 않는다(같은 번호를 쓰는 다른 사람·중복 계정 방지)
+const shareProvider = (a, b) => { const pa = providersOf(a); return providersOf(b).some((p) => pa.includes(p)); };
+const MERGE_TABLES = ['entries', 'tournament_entries', 'consents', 'user_sessions']; // user_id를 가진 기록은 기존 회원으로 옮긴다
+const mergeUsers = (ownerId, fromId) => {
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE user_identities SET user_id=? WHERE user_id=?').run(ownerId, fromId);
+    MERGE_TABLES.forEach((t) => db.prepare(`UPDATE ${t} SET user_id=? WHERE user_id=?`).run(ownerId, fromId));
+    db.prepare('DELETE FROM sms_codes WHERE user_id=?').run(fromId);
+    db.prepare('DELETE FROM users WHERE id=?').run(fromId);
+    db.exec('COMMIT');
+  } catch (err) { db.exec('ROLLBACK'); throw err; }
+};
+
 // 접수 설정: 접수 on/off, QR에 담기는 접수 토큰
 db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
 const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
@@ -376,7 +404,7 @@ const api = {
     const u = currentUser(req);
     const active = u && db.prepare(`SELECT token FROM entries WHERE user_id=? AND status IN ${ACTIVE}`).get(u.id);
     json(res, 200, {
-      user: u ? { name: u.name, provider: u.provider, phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
+      user: u ? { name: u.name, provider: u.provider, providers: providersOf(u.id), phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
       activeToken: active?.token || null,
       last: (u && db.prepare('SELECT party_size AS party, shoes FROM entries WHERE user_id=? ORDER BY id DESC LIMIT 1').get(u.id)) || null, // 지난 접수 인원·신발(다음 접수 기본값)
       intake: { open: intakeOpen(), window: outsideWindow() },
@@ -402,7 +430,7 @@ const api = {
     const until = rejoinBlockedUntil({ phone });
     if (until) return json(res, 403, { error: `탈퇴한 번호는 ${until.slice(0, 10)}까지 다시 가입할 수 없습니다. 문의는 매장으로 해 주세요.`, code: 'REJOIN_BLOCKED' });
     const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(ep(phone), user.id);
-    if (owner) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' });
+    if (owner && shareProvider(owner.id, user.id)) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' }); // 다른 플랫폼이면 통합 대상이라 인증을 진행한다
     const now = Date.now();
     const last = db.prepare('SELECT created_at FROM sms_codes WHERE user_id=? ORDER BY id DESC LIMIT 1').get(user.id);
     if (last && now - last.created_at < RESEND_MS)
@@ -433,12 +461,32 @@ const api = {
     db.prepare('UPDATE sms_codes SET attempts=attempts+1 WHERE id=?').run(row.id);
     const a = Buffer.from(hashCode(code)), b = Buffer.from(row.code_hash);
     if (!crypto.timingSafeEqual(a, b)) return json(res, 400, { error: '인증번호가 일치하지 않습니다.' });
+    const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(row.phone, user.id);
+    if (owner) {
+      if (shareProvider(owner.id, user.id)) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' });
+      // 같은 번호로 다른 플랫폼에 가입한 회원이 있다. 사용자가 통합에 동의하면 /api/phone/merge에서 합친다
+      db.prepare('UPDATE sms_codes SET verified_at=? WHERE id=?').run(Date.now(), row.id);
+      return json(res, 200, { ok: true, merge: { providers: providersOf(owner.id).map((p) => oauth.providers[p]?.label || p), phone: maskPhone(dp(row.phone)) } });
+    }
     try {
       db.prepare("UPDATE users SET phone=?, phone_verified_at=datetime('now','localtime') WHERE id=?").run(row.phone, user.id);
     } catch { return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' }); }
     db.prepare('UPDATE sms_codes SET used=1 WHERE user_id=?').run(user.id);
     linkMember(user, dp(row.phone));
     touchUser(user.id);
+    json(res, 200, { ok: true, phone: maskPhone(dp(row.phone)) });
+  },
+  // 통합회원 확정: 번호 인증을 마친 뒤 사용자가 동의하면 이 소셜 계정을 같은 번호의 기존 회원에 연결한다
+  'POST /api/phone/merge': async (req, res) => {
+    const user = currentUser(req);
+    if (!user) return json(res, 401, { error: '로그인이 필요합니다.' });
+    const row = db.prepare('SELECT * FROM sms_codes WHERE user_id=? AND used=0 AND verified_at > ? ORDER BY id DESC LIMIT 1').get(user.id, Date.now() - 10 * 60 * 1000);
+    if (!row) return json(res, 400, { error: '번호 인증이 필요합니다. 다시 인증해 주세요.' });
+    const owner = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(row.phone, user.id);
+    if (!owner) return json(res, 409, { error: '통합할 회원을 찾을 수 없습니다. 다시 인증해 주세요.' });
+    if (shareProvider(owner.id, user.id)) return json(res, 409, { error: '이미 다른 계정에서 인증된 번호입니다.' });
+    mergeUsers(owner.id, user.id); // 지금 로그인 세션도 기존 회원으로 옮겨진다
+    touchUser(owner.id);
     json(res, 200, { ok: true, phone: maskPhone(dp(row.phone)) });
   },
   'POST /api/entries': async (req, res) => {
@@ -504,7 +552,7 @@ const api = {
     expireUnarrived();
     const rows = db.prepare(`SELECT * FROM entries WHERE status IN ${ACTIVE}
       OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime'))
-      OR (status='EXPIRED' AND date(created_at)=date('now','localtime')) ORDER BY seq`).all();
+      OR (status='EXPIRED' AND created_at >= datetime('now','localtime','-12 hours')) ORDER BY seq`).all();
     // 최근 3개월 방문 횟수: 같은 번호로 레인 배정을 받은 날 수(하루에 여러 번 배정돼도 1회). 번호가 없는 수기 건은 null.
     // 대기 중인 건은 아직 배정 전이라 자기 자신이 포함되지 않는다(화면도 대기 건에만 표시)
     const phones = [...new Set(rows.map((e) => e.phone).filter(Boolean))];
@@ -748,9 +796,14 @@ const api = {
     const total = db.prepare(`SELECT COUNT(*) n FROM members ${w}`).get(...args).n;
     const year = new Date().getFullYear();
     const rows = db.prepare(`SELECT * FROM members ${w} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, size, (page - 1) * size);
+    const linkedIds = rows.map((m) => m.user_id).filter(Boolean);
+    const platformOf = new Map();
+    if (linkedIds.length) db.prepare(`SELECT user_id, provider FROM user_identities WHERE user_id IN (${linkedIds.map(() => '?').join(',')}) ORDER BY id`).all(...linkedIds)
+      .forEach((r) => platformOf.set(r.user_id, [...(platformOf.get(r.user_id) || []), r.provider]));
     json(res, 200, {
       total, page, size,
       entries: rows.map((m) => ({
+        platforms: platformOf.get(m.user_id) || [], // 가입한 소셜 플랫폼(이관만 되고 로그인 전이면 비어 있음)
         id: m.id, name: m.name, age: m.birth_year ? year - m.birth_year : null, gender: GENDER_LABEL[m.gender] || m.gender || '', birthDate: m.birth_date || '', lastUsedAt: (m.last_used_at || '').slice(0, 10),
         phone: maskPhone(dp(m.phone)), email: maskEmail(m.email), source: m.source, tier: m.tier, linked: !!m.user_id, joinedAt: (m.joined_at || '').slice(0, 10),
       })),
@@ -969,8 +1022,13 @@ const withdrawAccount = ({ userId = null, memberId = null }, doneBy) => {
       db.prepare('DELETE FROM user_sessions WHERE user_id=?').run(user.id);
       db.prepare('DELETE FROM users WHERE id=?').run(user.id);
     }
-    db.prepare(`INSERT INTO withdrawals (phone_hash,provider_hash,done_by,blocked_until) VALUES (?,?,?,datetime('now','localtime',?))`)
-      .run(phone ? idHash('phone', phone) : null, user ? idHash('provider', `${user.provider}:${user.provider_id}`) : null, doneBy, `+${REJOIN_DAYS} days`);
+    // 연결된 소셜 계정(통합회원이면 둘 다)마다 재가입 제한을 남긴다
+    const keys = user ? db.prepare('SELECT provider, provider_id FROM user_identities WHERE user_id=?').all(user.id).map((i) => `${i.provider}:${i.provider_id}`) : [];
+    if (user && !keys.length) keys.push(`${user.provider}:${user.provider_id}`);
+    if (user) db.prepare('DELETE FROM user_identities WHERE user_id=?').run(user.id);
+    const insW = db.prepare(`INSERT INTO withdrawals (phone_hash,provider_hash,done_by,blocked_until) VALUES (?,?,?,datetime('now','localtime',?))`);
+    insW.run(phone ? idHash('phone', phone) : null, keys[0] ? idHash('provider', keys[0]) : null, doneBy, `+${REJOIN_DAYS} days`);
+    keys.slice(1).forEach((k) => insW.run(null, idHash('provider', k), doneBy, `+${REJOIN_DAYS} days`));
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }
   notify();
@@ -1379,11 +1437,14 @@ const server = http.createServer(async (req, res) => {
       let profile;
       try { profile = await oauth.fetchProfile(name, url.searchParams.get('code'), state); }
       catch (err) { console.error(name, 'login failed:', err.message); return redirect(res, '/?login=failed', [clear]); }
-      const existing = db.prepare('SELECT id FROM users WHERE provider=? AND provider_id=?').get(name, profile.id);
-      if (!existing && rejoinBlockedUntil({ providerKey: `${name}:${profile.id}` })) return redirect(res, '/?login=withdrawn', [clear]);
-      db.prepare('INSERT INTO users (provider,provider_id,name) VALUES (?,?,?) ON CONFLICT(provider,provider_id) DO UPDATE SET name=excluded.name')
-        .run(name, profile.id, profile.name || '손님');
-      const u = db.prepare('SELECT id FROM users WHERE provider=? AND provider_id=?').get(name, profile.id);
+      let uid = identityOwner(name, profile.id);
+      if (!uid && rejoinBlockedUntil({ providerKey: `${name}:${profile.id}` })) return redirect(res, '/?login=withdrawn', [clear]);
+      if (uid) db.prepare('UPDATE users SET name=? WHERE id=? AND provider=?').run(profile.name || '손님', uid, name); // 이름은 처음 가입한 플랫폼의 값만 갱신
+      else {
+        uid = Number(db.prepare('INSERT INTO users (provider,provider_id,name) VALUES (?,?,?)').run(name, profile.id, profile.name || '손님').lastInsertRowid);
+        db.prepare('INSERT INTO user_identities (user_id,provider,provider_id) VALUES (?,?,?)').run(uid, name, profile.id);
+      }
+      const u = { id: uid };
       touchUser(u.id);
       const sid = crypto.randomBytes(24).toString('hex');
       db.prepare('INSERT INTO user_sessions (token,user_id) VALUES (?,?)').run(sid, u.id);

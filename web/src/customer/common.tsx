@@ -150,6 +150,13 @@ export function PhoneVerify({ hint, purpose, onVerified, onForbidden }: {
     setErr('');
     const r = await post('/api/phone/verify', { code: value });
     if (!r.ok) return setErr(r.body.error || '인증에 실패했습니다.');
+    if (r.body.merge) { // 같은 번호로 다른 플랫폼에 가입한 회원이 있다
+      const m = r.body.merge as { providers: string[]; phone: string };
+      const ok = await confirmDialog(`이미 ${m.providers.join('·')}로 가입된 회원입니다 (${m.phone}). 이 로그인도 같은 회원으로 통합할까요? 통합하면 어느 쪽으로 로그인해도 같은 대기 정보를 씁니다.`, { confirmLabel: '통합하기' });
+      if (!ok) return setErr('통합하지 않으면 이 로그인으로는 접수할 수 없습니다. 기존 로그인 방식으로 이용하거나 다시 인증해 주세요.');
+      const mr = await post('/api/phone/merge', {});
+      if (!mr.ok) return setErr(mr.body.error || '통합에 실패했습니다.');
+    }
     onVerified();
   };
   const sendLabel = left > 0 ? `다시 받기 (${left})` : sent ? '다시 받기' : '인증번호 받기';

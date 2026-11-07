@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { Alert, Anchor, Button, Image, NativeSelect, Text, TextInput, Title } from '@mantine/core';
+import { ActionIcon, Alert, Anchor, Button, Image, Text, TextInput, Title } from '@mantine/core';
+import { LuMinus, LuPlus } from 'react-icons/lu';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
@@ -136,22 +137,13 @@ function App() {
               <div className="flex flex-col gap-3">
                 <TextInput label="이름" size="md" autoComplete="name" maxLength={20} required value={name} onChange={(e) => setName(e.currentTarget.value)} />
                 <Text c="dimmed" fz="sm">인증된 번호: {me.user!.phone}</Text>
-                <NativeSelect label="인원 (최대 8명)"
-      size="md"
-      value={party}
-      onChange={(e) => changeParty(Number(e.currentTarget.value))}
-      data={Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: `${i + 1}명` }))} />
-                <div className="flex gap-4 items-end flex-nowrap">
-                  <NativeSelect label="신발 대여 인원"
-      size="md"
-      className="flex-1"
-      value={shoes}
-      onChange={(e) => { setShoesTouched(true); setShoes(Number(e.currentTarget.value)); }}
-      data={Array.from({ length: party + 1 }, (_, i) => ({ value: String(i), label: i === 0 ? '대여 안함' : i + '명' }))} />
-                  <Button variant="default" size="md" onClick={() => { setShoesTouched(true); setShoes(0); }}>전체 대여 안함</Button>
+                <Stepper label="인원 (최대 8명)" value={party} min={1} max={8} unit="명" onChange={changeParty} />
+                <div>
+                  <Stepper label="신발 대여 인원" value={shoes} min={0} max={party} unit="명" zeroLabel="대여 안함" onChange={(v) => { setShoesTouched(true); setShoes(v); }} />
+                  <Button variant="default" size="sm" className="mt-2" onClick={() => { setShoesTouched(true); setShoes(0); }}>전체 대여 안함</Button>
                 </div>
                 <Alert color="blue" role="note">
-                  접수 후 <b>{me.arrivalLimitMin}분 안에 카운터에서 도착 확인</b>을 받지 않으면 대기가 자동으로 만료됩니다. 접수 후 바로 매장으로 오셔서 직원에게 말씀해 주세요.
+                  접수 후 <b>{me.arrivalLimitMin}분 안에 카운터에서 도착 확인</b>을 받으셔야 대기가 확정되며, 도착 확인을 받지 않으면 대기가 자동으로 만료됩니다. 접수 후 바로 매장으로 오셔서 직원에게 말씀해주세요.
                 </Alert>
                 <FarNotice limit={me.arrivalLimitMin} />
                 <Button type="submit" size="md" fullWidth>대기 접수</Button>
@@ -166,6 +158,20 @@ function App() {
         <Anchor href="/tournament" c="dimmed">정기 대회 신청 →</Anchor> · <Anchor href="/calendar" c="dimmed">행사 일정 →</Anchor> · <Anchor href="/notice" c="dimmed">공지사항 →</Anchor>
       </Text>
     </Page>
+  );
+}
+
+/** 인원·신발 수량을 −/+ 버튼으로 바꾸는 입력 */
+function Stepper({ label, value, min, max, unit, zeroLabel, onChange }: { label: string; value: number; min: number; max: number; unit: string; zeroLabel?: string; onChange: (v: number) => void }) {
+  return (
+    <div>
+      <Text fz="sm" fw={500} className="mb-1">{label}</Text>
+      <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--mantine-color-default-border)] p-2">
+        <ActionIcon variant="light" size={48} radius="md" aria-label={label + ' 줄이기'} disabled={value <= min} onClick={() => onChange(value - 1)}><LuMinus size={24} /></ActionIcon>
+        <Text fz={26} fw={700} aria-live="polite" aria-label={label}>{value === 0 && zeroLabel ? zeroLabel : value + unit}</Text>
+        <ActionIcon variant="filled" size={48} radius="md" aria-label={label + ' 늘리기'} disabled={value >= max} onClick={() => onChange(value + 1)}><LuPlus size={24} /></ActionIcon>
+      </div>
+    </div>
   );
 }
 

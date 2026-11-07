@@ -11,9 +11,11 @@ sms.driver = async (to, text) => { lastCode = text.match(/\d{6}/)[0]; };
 
 // 카카오를 흉내 내는 모의 OAuth 서버
 let mockId = 777;
+let naverId = 'nv888';
 const mock = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
   if (req.url === '/token') return res.end(JSON.stringify({ access_token: 'tok' }));
+  if (req.url === '/nme') return res.end(JSON.stringify({ response: { id: naverId, name: '네이버손님' } })); // 네이버 프로필 모양
   if (req.url === '/me') {
     if (req.headers.authorization !== 'Bearer tok') { res.statusCode = 401; return res.end('{}'); }
     return res.end(JSON.stringify({ id: mockId, kakao_account: { profile: { nickname: '홍길동' } } }));
@@ -124,6 +126,40 @@ mock.listen(0, () => server.listen(0, async () => {
     await call('GET', `/auth/kakao/callback?code=c&state=${st2}`, null, { raw: true });
     assert.notEqual(jar.sid, userSid); // 재로그인은 새 세션
     assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token); // 같은 계정이므로 접수 유지
+    // --- 통합회원: 같은 번호를 인증한 다른 플랫폼 계정은 동의하면 한 회원이 된다 ---
+    Object.assign(server.oauth.providers.naver, { clientId: 'nid', tokenUrl: mockBase + '/token', profileUrl: mockBase + '/nme' });
+    const kakaoSid = jar.sid; delete jar.sid;
+    const socialLogin = async (p) => {
+      const st = new URL((await call('GET', `/auth/${p}`, null, { raw: true })).location).searchParams.get('state');
+      return call('GET', `/auth/${p}/callback?code=c&state=${st}`, null, { raw: true });
+    };
+    assert.equal((await socialLogin('naver')).location, '/');
+    const nm = (await call('GET', '/api/me')).body;
+    assert.deepEqual([nm.user.provider, nm.user.phone], ['naver', null]); // 새 네이버 계정, 번호는 아직 없음
+    const resetSms = () => server.db.prepare('DELETE FROM sms_codes WHERE phone=?').run(server.ep('01011112222')); // 번호당 하루 한도 초기화
+    resetSms();
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).status, 200); // 카카오 회원이 쓰는 번호여도 다른 플랫폼이면 인증 진행
+    const vm = await call('POST', '/api/phone/verify', { code: lastCode });
+    assert.deepEqual(vm.body.merge.providers, ['카카오']); // 통합 확인을 요청
+    assert.equal((await call('GET', '/api/me')).body.user.phone, null); // 동의 전에는 번호가 붙지 않는다
+    assert.equal((await call('POST', '/api/entries', { partySize: 1 })).body.code, 'PHONE_REQUIRED');
+    assert.equal((await call('POST', '/api/phone/merge')).status, 200);
+    const merged = (await call('GET', '/api/me')).body;
+    assert.deepEqual(merged.user.providers, ['kakao', 'naver']);
+    assert.equal(merged.user.phone, '010-****-2222');
+    assert.equal(merged.activeToken, a.body.token); // 카카오로 접수한 대기를 네이버 로그인에서도 본다
+    assert.equal(server.db.prepare("SELECT COUNT(*) n FROM users WHERE phone=?").get(server.ep('01011112222')).n, 1);
+    delete jar.sid;
+    assert.equal((await socialLogin('kakao')).location, '/'); // 카카오로 다시 로그인해도 같은 회원
+    assert.equal((await call('GET', '/api/me')).body.activeToken, a.body.token);
+    assert.equal((await call('GET', '/api/me')).body.user.name, '홍길동');
+    // 같은 플랫폼의 다른 계정은 같은 번호를 쓸 수 없다(합치지 않는다)
+    mockId = 779; delete jar.sid;
+    await socialLogin('kakao');
+    resetSms();
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).status, 409);
+    mockId = 777; delete jar.sid; jar.sid = kakaoSid;
+    assert.deepEqual((await call('GET', '/api/me')).body.user.providers, ['kakao', 'naver']); // 원래 카카오 세션 복원 확인
     // --- 관리자 ---
     assert.equal((await call('GET', '/api/admin/entries')).status, 401);
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'x' })).status, 401);
@@ -164,7 +200,7 @@ mock.listen(0, () => server.listen(0, async () => {
     server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-16 minutes') WHERE token=?").run(e2.body.token);
     assert.equal((await view(e2.body.token)).status, 'EXPIRED'); // 조회만 해도 만료 상태로 바뀜(취소와 다른 상태)
     assert.equal((await view(e2.body.token)).position, null);
-    assert.ok((await call('GET', '/api/admin/entries')).body.entries.some((e) => e.status === 'EXPIRED')); // 오늘 만료 건은 관리자에게 보임
+    assert.ok((await call('GET', '/api/admin/entries')).body.entries.some((e) => e.status === 'EXPIRED')); // 최근 12시간 만료 건은 관리자에게 보임(자정 넘어도 보임)
     // 직원이 도착 확인을 하면 만료 건이 대기로 복구된다(접수 순서 유지)
     const e2id = (await call('GET', '/api/admin/entries')).body.entries.find((e) => e.status === 'EXPIRED').id;
     assert.equal((await call('POST', `/api/admin/entries/${e2id}/arrive`)).status, 200);
@@ -610,6 +646,18 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.ok(wEntry);
     const wm = (await findMember('01055550001')).entries[0];
     assert.equal(wm.lastUsedAt, new Date().toLocaleDateString('sv')); // 접수하면 마지막 이용일이 기록된다
+    // 통합회원: 이 회원에 네이버 계정도 연결해 둔다(탈퇴하면 두 계정 모두 재가입이 제한되어야 한다)
+    const kSid = jar.sid; delete jar.sid;
+    naverId = 'nv901';
+    await socialLogin('naver');
+    server.db.prepare('DELETE FROM sms_codes WHERE phone=?').run(server.ep('01055550001'));
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01055550001' })).status, 200);
+    assert.deepEqual((await call('POST', '/api/phone/verify', { code: lastCode })).body.merge.providers, ['카카오']);
+    assert.equal((await call('POST', '/api/phone/merge')).status, 200);
+    jar.sid = kSid;
+    assert.deepEqual((await call('GET', '/api/me')).body.user.providers, ['kakao', 'naver']);
+    const platRow = (await findMember('01055550001')).entries[0];
+    assert.deepEqual(platRow.platforms, ['kakao', 'naver']); // 회원관리에 가입 플랫폼 표시
     await call('POST', '/api/admin/blacklist', { phone: '01066660000', name: '차단대상', reason: '반복 노쇼' });
     // 대회에 입금이 확인된 신청이 있으면 탈퇴할 수 없다
     const wt = (await tour({ name: '탈퇴 시험 대회', capacity: 50 })).body.id;
@@ -640,6 +688,9 @@ mock.listen(0, () => server.listen(0, async () => {
     mockId = 5001; await call('POST', '/api/logout');
     const stW = new URL((await call('GET', '/auth/kakao', null, { raw: true })).location).searchParams.get('state');
     assert.equal((await call('GET', `/auth/kakao/callback?code=c&state=${stW}`, null, { raw: true })).location, '/?login=withdrawn');
+    assert.equal((await call('GET', '/api/me')).body.user, null);
+    naverId = 'nv901'; delete jar.sid; // 통합회원이었으므로 연결된 네이버 계정으로도 재가입이 막힌다
+    assert.equal((await socialLogin('naver')).location, '/?login=withdrawn');
     assert.equal((await call('GET', '/api/me')).body.user, null);
     await login(5002); // 다른 소셜 계정이어도 번호가 같으면 막는다
     const rejoin = await call('POST', '/api/phone/send', { phone: '01055550001' });

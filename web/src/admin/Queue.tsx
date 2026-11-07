@@ -230,7 +230,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
       {/* 도착 만료: 접수 후 10분 안에 도착 인증을 하지 않은 오늘의 건. 매장에 와 있으면 도착 확인으로 되살린다 */}
       {expired.length > 0 && (
         <Paper withBorder radius="lg" className="mt-4 overflow-hidden">
-          <div className="px-5 py-3 bg-[var(--mantine-color-default-hover)]"><Text fw={700}>도착 만료 {expired.length}팀 <Text span c="dimmed" fz="sm">· 오늘, 접수 후 제한 시간 안에 도착 확인을 받지 못한 건</Text></Text></div>
+          <div className="px-5 py-3 bg-[var(--mantine-color-default-hover)]"><Text fw={700}>도착 만료 {expired.length}팀 <Text span c="dimmed" fz="sm">· 최근 12시간, 접수 후 제한 시간 안에 도착 확인을 받지 못한 건</Text></Text></div>
           <Table.ScrollContainer minWidth={520}>
             <Table verticalSpacing="sm">
               <Table.Tbody>

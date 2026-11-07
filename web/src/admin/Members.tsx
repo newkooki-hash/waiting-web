@@ -4,9 +4,10 @@ import { post } from '../lib/api';
 import { Actions, DataTable, EmptyRow, Heading, Meta, Panel, Rv, bind, useLoad } from './ui';
 import { confirmDialog, alertDialog } from '../lib/dialogs';
 
+const PLATFORM: Record<string, string> = { kakao: '카카오', naver: '네이버' };
 interface Member {
   id: number; name: string; age: number | null; gender: string; phone: string; email: string;
-  joinedAt: string; lastUsedAt: string; source: string; linked: boolean; tier: string;
+  joinedAt: string; lastUsedAt: string; source: string; linked: boolean; tier: string; platforms: string[];
 }
 interface LogRow { changedAt: string; field: string; oldValue: string | null; newValue: string | null; changedBy: string }
 interface ImportResult { error?: string; total: number; imported: number; duplicate: number; errors: { line: number; reason: string; row: string[] }[] }
@@ -109,11 +110,12 @@ export function Members() {
           )}
         </Panel>
       )}
-      <DataTable head={['이름', '나이', '성별', '연락처', '이메일', '가입일', '마지막 이용', '구분', '']} mb="xs">
+      <DataTable head={['이름', '나이', '성별', '연락처', '이메일', '가입일', '마지막 이용', '가입 플랫폼', '구분', '']} mb="xs">
         {rows.length ? rows.map((m) => (
           <Table.Tr key={m.id}>
             <Table.Td><Text fw={700}>{m.name}</Text></Table.Td><Table.Td>{m.age ?? ''}</Table.Td><Table.Td>{m.gender}</Table.Td>
             <Table.Td><Rv type="member" id={m.id} masked={m.phone} /></Table.Td><Table.Td>{m.email}</Table.Td><Table.Td>{m.joinedAt}</Table.Td><Table.Td>{m.lastUsedAt || '-'}</Table.Td>
+            <Table.Td>{m.platforms.length ? <div className="flex gap-1 flex-wrap">{m.platforms.map((p) => <Badge key={p} size="sm" variant="light" color={p === 'kakao' ? 'yellow' : 'green'}>{PLATFORM[p] || p}</Badge>)}</div> : '-'}</Table.Td>
             <Table.Td>{m.source}{m.linked ? ' · 연결' : ''}<div><Badge size="sm" variant="light" color={m.tier === '정회원' ? 'teal' : 'gray'}>{m.tier}</Badge></div></Table.Td>
             <Actions>
               <Button variant="light" color="red" size="xs" onClick={() => remove(m)}>삭제</Button>
