@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Paper, Text, Title } from '@mantine/core';
 import { mount } from './common';
-import { Box, Container } from '@mantine/core';
 
 interface Policy { title: string; body: string; updatedAt?: string }
 
