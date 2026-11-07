@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Group, Table, Text, TextInput } from '@mantine/core';
+import { Button, Table, Text, TextInput } from '@mantine/core';
 import { post } from '../lib/api';
 import { Actions, DataTable, EmptyRow, Heading, Msg, Panel, Rv, bind, useLoad } from './ui';
 import { confirmDialog } from '../lib/dialogs';
@@ -37,12 +37,12 @@ export function Blacklist({ onChanged }: { onChanged: () => void }) {
       <Heading title="블랙리스트" sub="등록된 번호는 접수할 수 없습니다. 사유는 직원만 볼 수 있고 손님에게는 보이지 않습니다." />
       <Panel>
         <form onSubmit={(ev) => { ev.preventDefault(); add(); }}>
-          <Group align="flex-end">
-            <TextInput placeholder="전화" inputMode="numeric" required w={150} {...bind(phone, setPhone)} />
-            <TextInput placeholder="이름 (선택)" maxLength={20} w={120} {...bind(name, setName)} />
-            <TextInput placeholder="등록 사유" maxLength={200} required w={260} {...bind(reason, setReason)} />
+          <div className="flex gap-4 items-end flex-wrap">
+            <TextInput placeholder="전화" inputMode="numeric" required {...bind(phone, setPhone)} className="w-[150px]" />
+            <TextInput placeholder="이름 (선택)" maxLength={20} {...bind(name, setName)} className="w-[120px]" />
+            <TextInput placeholder="등록 사유" maxLength={200} required {...bind(reason, setReason)} className="w-[260px]" />
             <Button type="submit">등록</Button>
-          </Group>
+          </div>
         </form>
       </Panel>
       <DataTable head={['이름', '전화', '사유', '등록일', '']} mb="xs">

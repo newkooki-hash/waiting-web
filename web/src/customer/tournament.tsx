@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Anchor, Badge, Button, Group, NativeSelect, Paper, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Anchor, Badge, Button, NativeSelect, Paper, Text, TextInput, Title } from '@mantine/core';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
 import { confirmDialog } from '../lib/dialogs';
@@ -27,7 +27,7 @@ function App() {
   }, [reload]);
   useEffect(() => { load(); }, [load]);
 
-  const heading = <Title order={3} mb="md">정기 대회 신청</Title>;
+  const heading = <Title order={3} className="mb-4">정기 대회 신청</Title>;
   if (!me) return <Page title="오란다 볼링 정기 대회 신청">{heading}</Page>;
 
   const logged = !!me.user;
@@ -47,14 +47,14 @@ function App() {
   return (
     <Page title="오란다 볼링 정기 대회 신청">
       {heading}
-      <Text c="dimmed" fz="sm" mb="sm"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
+      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
 
       {!logged && (
         <Card>
-          <Stack gap="sm">
+          <div className="flex flex-col gap-3">
             <Text c="dimmed" fz="sm">간편 로그인 후 신청할 수 있습니다.</Text>
             <Providers me={me} next="tournament" />
-          </Stack>
+          </div>
         </Card>
       )}
       {logged && (
@@ -74,24 +74,24 @@ function App() {
         const notice = logged && verified && !full ? '대회는 정회원만 신청할 수 있습니다. 위에서 생년월일과 성별을 입력해 정회원으로 가입해 주세요.' : '';
         return (
           <Card key={t.id}>
-            <Stack gap={4}>
+            <div className="flex flex-col gap-1">
               <Title order={4}>{t.name}</Title>
               <Text c="dimmed" fz="sm">대회 {t.eventAt}</Text>
               <Text c="dimmed" fz="sm">신청 {t.applyStart} ~ {t.applyEnd}</Text>
               <Text c="dimmed" fz="sm">참가 {t.taken}명 / 정원 {t.capacity}명 · 대기 {t.waitlist}명{t.fee ? ` · 참가비 ${t.fee.toLocaleString()}원` : ''}</Text>
-              {t.info && <Paper bg="var(--mantine-color-default-hover)" p="xs" radius="sm" fz="sm" style={{ whiteSpace: 'pre-wrap' }}>{t.info}</Paper>}
-              <div style={{ marginTop: 8 }}>
+              {t.info && <Paper bg="var(--mantine-color-default-hover)" radius="sm" fz="sm" className="p-2.5 whitespace-pre-wrap">{t.info}</Paper>}
+              <div className="mt-2">
                 {mine ? <Badge color={mine[1]} variant="light">{mine[0]}</Badge>
                   : t.apply === 'before' ? <Badge color="gray" variant="light">신청 시작 전</Badge>
                   : t.apply === 'closed' ? <Badge color="gray" variant="light">신청 마감</Badge> : null}
               </div>
               {t.mine === 'CONFIRMED' && <Text c="dimmed" fz="sm">취소는 매장에 문의해 주세요.</Text>}
               {notice && <Text c="dimmed" fz="sm">{notice}</Text>}
-              <Group grow mt="sm">
+              <div className="flex gap-4 items-center flex-wrap [&>*]:flex-1 mt-3">
                 <Button size="md" disabled={!canApply} onClick={() => act(t, 'apply')}>{t.taken >= t.capacity ? '대기 신청' : '신청하기'}</Button>
                 <Button size="md" variant="default" disabled={!canCancel} onClick={() => act(t, 'cancel')}>신청 취소</Button>
-              </Group>
-            </Stack>
+              </div>
+            </div>
           </Card>
         );
       }) : <Card><Text c="dimmed">진행 중인 대회가 없습니다.</Text></Card>)}
@@ -133,17 +133,27 @@ function ProfileCard({ onFullMember, onSaved }: { onFullMember: (v: boolean) => 
 
   return (
     <Card>
-      <Stack gap="sm">
+      <div className="flex flex-col gap-3">
         <Title order={4}>{full ? '내 정보 (정회원)' : '정회원 가입'}</Title>
         <Text c="dimmed" fz="sm">{hint}</Text>
-        <TextInput label="생년월일" type="date" size="md" min="1900-01-01" required value={birth} onChange={(e) => setBirth(e.currentTarget.value)}
-          description={birthYear ? `기존 정보: ${birthYear}년생. 정확한 생년월일을 입력해 주세요.` : undefined} />
-        <NativeSelect label="성별" size="md" required value={gender} onChange={(e) => setGender(e.currentTarget.value)}
-          data={[{ value: '', label: '선택' }, { value: 'm', label: '남' }, { value: 'f', label: '여' }]} />
+        <TextInput label="생년월일"
+      type="date"
+      size="md"
+      min="1900-01-01"
+      required
+      value={birth}
+      onChange={(e) => setBirth(e.currentTarget.value)}
+      description={birthYear ? `기존 정보: ${birthYear}년생. 정확한 생년월일을 입력해 주세요.` : undefined} />
+        <NativeSelect label="성별"
+      size="md"
+      required
+      value={gender}
+      onChange={(e) => setGender(e.currentTarget.value)}
+      data={[{ value: '', label: '선택' }, { value: 'm', label: '남' }, { value: 'f', label: '여' }]} />
         <Button size="md" fullWidth onClick={save}>저장</Button>
         {err && <Text c="red" role="alert">{err}</Text>}
         <Text c="dimmed" fz="sm">허위로 입력한 경우 대회 참가가 제한될 수 있습니다. 입력한 내용이 바뀌면 이력이 기록됩니다.</Text>
-      </Stack>
+      </div>
     </Card>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Checkbox, FileInput, Group, Image, Paper, Stack, Table, Text, TextInput, Textarea, Title } from '@mantine/core';
+import { Button, Checkbox, FileInput, Image, Paper, Table, Text, TextInput, Textarea, Title } from '@mantine/core';
 import { post, today } from '../lib/api';
 import { Actions, DataTable, EmptyRow, Heading, Meta, Msg, Panel, bind, useLoad } from './ui';
 import { confirmDialog } from '../lib/dialogs';
@@ -68,15 +68,15 @@ export function Notices() {
     <section>
       <Heading title="공지·이벤트 이미지" sub="공지사항은 손님 화면의 `공지사항`에, 이벤트 이미지는 대기 접수 화면 맨 위에 표시됩니다." />
       <Panel>
-        <Title order={5} mb="sm">공지사항</Title>
+        <Title order={5} className="mb-3">공지사항</Title>
         <form onSubmit={(ev) => { ev.preventDefault(); save(); }}>
-          <Group align="flex-start" mb="sm" wrap="wrap">
+          <div className="flex gap-4 items-start flex-wrap mb-3">
             <TextInput type="date" aria-label="날짜" required {...bind(date, setDate)} />
-            <TextInput placeholder="제목" maxLength={100} required w={240} {...bind(title, setTitle)} />
-            <Textarea rows={4} placeholder="내용" maxLength={5000} style={{ flex: 1, minWidth: 240 }} {...bind(body, setBody)} />
+            <TextInput placeholder="제목" maxLength={100} required {...bind(title, setTitle)} className="w-[240px]" />
+            <Textarea rows={4} placeholder="내용" maxLength={5000} className="flex-1 min-w-[240px]" {...bind(body, setBody)} />
             <Button type="submit">{editId ? '수정 저장' : '등록'}</Button>
             {editId && <Button variant="default" onClick={resetForm}>수정 취소</Button>}
-          </Group>
+          </div>
         </form>
         <Msg>{nMsg}</Msg>
         <DataTable head={['날짜', '제목', '']} mb="0">
@@ -93,30 +93,30 @@ export function Notices() {
         </DataTable>
       </Panel>
       <Panel>
-        <Title order={5} mb="sm">이벤트 이미지</Title>
-        <Group align="center">
+        <Title order={5} className="mb-3">이벤트 이미지</Title>
+        <div className="flex gap-4 items-center flex-wrap">
           <FileInput placeholder="이미지 선택" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="이미지 파일" clearable value={file} onChange={setFile} />
           <Button loading={uploading} onClick={upload}>올리기</Button>
           <Text c="dimmed" fz="sm">PNG·JPG·GIF·WEBP, 3MB 이하, 최대 30개. 위에서부터 순서대로 보입니다.</Text>
-        </Group>
+        </div>
         <Msg>{bMsg}</Msg>
-        <Stack gap="xs" mt="sm">
+        <div className="flex flex-col gap-2.5 mt-3">
           {banners.length ? banners.map((x, i) => (
-            <Paper withBorder radius="md" p="xs" key={x.id}>
-              <Group wrap="nowrap">
-                <Image src={`/api/admin/banner-image?id=${x.id}`} alt={`이벤트 이미지 ${i + 1}`} w={160} mah={90} fit="cover" radius="sm" />
-                <Text style={{ flex: 1 }}>#{i + 1}</Text>
+            <Paper withBorder radius="md" key={x.id} className="p-2.5">
+              <div className="flex gap-4 items-center flex-nowrap">
+                <Image src={`/api/admin/banner-image?id=${x.id}`} alt={`이벤트 이미지 ${i + 1}`} fit="cover" radius="sm" className="w-[160px] max-h-[90px]" />
+                <Text className="flex-1">#{i + 1}</Text>
                 <Button variant="default" size="xs" disabled={i === 0} onClick={() => bannerAct(x.id, 'up')}>위로</Button>
                 <Button variant="default" size="xs" disabled={i === banners.length - 1} onClick={() => bannerAct(x.id, 'down')}>아래로</Button>
                 <Button variant="light" color="red" size="xs" onClick={() => bannerAct(x.id, 'remove')}>삭제</Button>
-              </Group>
+              </div>
             </Paper>
           )) : <Meta>등록된 이미지가 없습니다.</Meta>}
-        </Stack>
+        </div>
       </Panel>
       <Panel>
-        <Title order={5} mb="xs">이용약관·개인정보처리방침</Title>
-        <Text c="dimmed" fz="sm" mb="sm">손님은 로그인한 뒤 첫 이용 때 동의합니다. 내용이 비어 있는 약관은 동의를 요구하지 않습니다. 이용약관 같은 일반 개정은 공지로 알리고, 수집 항목을 늘리거나 이용 목적을 바꾸는 중요한 변경만 <b>재동의 필요</b>를 체크해 모든 회원이 다시 동의하게 하세요.</Text>
+        <Title order={5} className="mb-2.5">이용약관·개인정보처리방침</Title>
+        <Text c="dimmed" fz="sm" className="mb-3">손님은 로그인한 뒤 첫 이용 때 동의합니다. 내용이 비어 있는 약관은 동의를 요구하지 않습니다. 이용약관 같은 일반 개정은 공지로 알리고, 수집 항목을 늘리거나 이용 목적을 바꾸는 중요한 변경만 <b>재동의 필요</b>를 체크해 모든 회원이 다시 동의하게 하세요.</Text>
         <PolicyBoxes policies={policies} reload={loadPolicies} />
       </Panel>
     </section>
@@ -148,21 +148,21 @@ function PolicyBox({ p, onResult }: { p: Policy; onResult: (text: string, ok: bo
   };
 
   return (
-    <Stack gap="xs" mb="lg">
-      <Group>
+    <div className="flex flex-col gap-2.5 mb-5">
+      <div className="flex gap-4 items-center flex-wrap">
         <Text fw={700}>{p.title}</Text>
         <Text c="dimmed" fz="xs">
           {p.version ? `버전 ${p.version} · 수정 ${(p.updatedAt || '').slice(0, 16)}${p.consentVersion < p.version ? ` · 동의 기준 버전 ${p.consentVersion}` : ''}` : '아직 등록되지 않음 (동의를 요구하지 않음)'}
         </Text>
         <a href={`/${p.type}`} target="_blank" rel="noopener">손님 화면 보기</a>
-      </Group>
+      </div>
       <Textarea rows={8} {...bind(body, setBody)} />
-      <Group>
+      <div className="flex gap-4 items-center flex-wrap">
         <Checkbox label="재동의 필요 (수집 항목·이용 목적 변경 등)" checked={reconsent} onChange={(e) => setReconsent(e.currentTarget.checked)} />
         <Checkbox label="공지사항에 개정 안내 올리기" checked={notify} onChange={(e) => setNotify(e.currentTarget.checked)} />
-      </Group>
+      </div>
       <TextInput placeholder="개정 내용 요약 (공지에 표시, 선택)" maxLength={1000} {...bind(summary, setSummary)} />
       <div><Button onClick={save}>저장</Button></div>
-    </Stack>
+    </div>
   );
 }

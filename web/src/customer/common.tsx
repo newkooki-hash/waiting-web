@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Anchor, Box, Button, Checkbox, Container, Group, Paper, PaperProps, PinInput, Stack, Text, TextInput } from '@mantine/core';
+import { Anchor, Button, Checkbox, Paper, PaperProps, PinInput, Text, TextInput } from '@mantine/core';
 import { mountApp } from '../lib/app';
 import { post } from '../lib/api';
 import type { Me } from '../lib/types';
@@ -14,16 +14,16 @@ export function Page({ title, children }: { title?: string; children: ReactNode 
   useEffect(() => { if (title) document.title = title; }, [title]);
   return (
     <>
-      <Box bg="dark.8" c="gray.0" py="sm">
-        <Container size={420}><Text fw={700}>오란다 볼링파크</Text></Container>
-      </Box>
-      <Container size={420} py="lg">{children}</Container>
+      <div className="bg-[var(--mantine-color-dark-8)] text-[var(--mantine-color-gray-0)] py-3">
+        <div className="mx-auto w-full max-w-[420px] px-4"><Text fw={700}>오란다 볼링파크</Text></div>
+      </div>
+      <div className="mx-auto w-full max-w-[420px] px-4 py-5">{children}</div>
     </>
   );
 }
 
 export function Card({ children, ...rest }: { children: ReactNode } & PaperProps & Record<string, unknown>) {
-  return <Paper withBorder radius="md" p="lg" mb="sm" {...rest}>{children}</Paper>;
+  return <Paper withBorder radius="md" {...rest} className="p-5 mb-3">{children}</Paper>;
 }
 
 /** /api/me 를 불러와 두고 reload()로 다시 읽는다 */
@@ -51,13 +51,13 @@ export function UserBar({ me, onDone }: { me: Me; onDone: (kind: 'logout' | 'wit
     onDone('logout');
   };
   return (
-    <Group justify="space-between" mb="xs" c="dimmed" fz="sm">
+    <div className="flex gap-4 items-center justify-between flex-wrap mb-2.5 text-[var(--mantine-color-dimmed)] text-[var(--mantine-font-size-sm)]">
       <span>{me.user!.name}님</span>
-      <Group gap={6}>
+      <div className="flex gap-[6px] items-center flex-wrap">
         <Anchor component="button" type="button" fz="sm" c="dimmed" onClick={withdraw}>회원 탈퇴</Anchor>·
         <Anchor component="button" type="button" fz="sm" c="dimmed" onClick={logout}>로그아웃</Anchor>
-      </Group>
-    </Group>
+      </div>
+    </div>
   );
 }
 
@@ -69,14 +69,19 @@ const SSO_COLOR: Record<string, { bg: string; fg: string }> = {
 export function Providers({ me, next }: { me: Me; next?: string }) {
   if (!me.providers.length) return <Text ta="center" c="dimmed">로그인 설정이 아직 되어 있지 않습니다.</Text>;
   return (
-    <Stack gap="xs">
+    <div className="flex flex-col gap-2.5">
       {me.providers.map((p) => (
-        <Button key={p.id} component="a" href={`/auth/${p.id}${next ? `?next=${next}` : ''}`} size="md" fullWidth
-          color={SSO_COLOR[p.id]?.bg} c={SSO_COLOR[p.id]?.fg}>
+        <Button key={p.id}
+      component="a"
+      href={`/auth/${p.id}${next ? `?next=${next}` : ''}`}
+      size="md"
+      fullWidth
+      color={SSO_COLOR[p.id]?.bg}
+      c={SSO_COLOR[p.id]?.fg}>
           {p.label}로 시작하기
         </Button>
       ))}
-    </Stack>
+    </div>
   );
 }
 
@@ -97,20 +102,22 @@ export function Consent({ me, onSaved }: { me: Me; onSaved: () => void }) {
   };
   return (
     <Card>
-      <Stack gap="sm">
+      <div className="flex flex-col gap-3">
         <Text fw={700}>서비스 이용 동의</Text>
         {miss.includes('terms') && (
-          <Checkbox checked={terms} onChange={(e) => setTerms(e.currentTarget.checked)}
-            label={<>[필수] <Anchor href="/terms" target="_blank" rel="noopener">이용약관</Anchor>에 동의합니다</>} />
+          <Checkbox checked={terms}
+      onChange={(e) => setTerms(e.currentTarget.checked)}
+      label={<>[필수] <Anchor href="/terms" target="_blank" rel="noopener">이용약관</Anchor>에 동의합니다</>} />
         )}
         {miss.includes('privacy') && (
-          <Checkbox checked={privacy} onChange={(e) => setPrivacy(e.currentTarget.checked)}
-            label={<>[필수] <Anchor href="/privacy" target="_blank" rel="noopener">개인정보 수집·이용</Anchor>에 동의합니다</>} />
+          <Checkbox checked={privacy}
+      onChange={(e) => setPrivacy(e.currentTarget.checked)}
+      label={<>[필수] <Anchor href="/privacy" target="_blank" rel="noopener">개인정보 수집·이용</Anchor>에 동의합니다</>} />
         )}
         <Checkbox checked={marketing} onChange={(e) => setMarketing(e.currentTarget.checked)} label="[선택] 이벤트·행사 소식 수신에 동의합니다" />
         <Button size="md" onClick={submit}>동의하고 계속하기</Button>
         {err && <Text c="red" role="alert">{err}</Text>}
-      </Stack>
+      </div>
     </Card>
   );
 }
@@ -148,19 +155,19 @@ export function PhoneVerify({ hint, purpose, onVerified, onForbidden }: {
   const sendLabel = left > 0 ? `다시 받기 (${left})` : sent ? '다시 받기' : '인증번호 받기';
   return (
     <Card>
-      <Stack gap="sm">
+      <div className="flex flex-col gap-3">
         <Text c="dimmed" fz="sm">{hint}</Text>
         <TextInput label="휴대전화번호" type="tel" inputMode="numeric" autoComplete="tel" placeholder="01012345678" size="md" value={phone} onChange={(e) => setPhone(e.currentTarget.value)} />
         <Button size="md" loading={busy} disabled={left > 0} onClick={send}>{sendLabel}</Button>
         {sent && (
-          <Stack gap="xs" align="center">
-            <Text fz="sm" c="dimmed" ta="left" w="100%">인증번호 6자리</Text>
+          <div className="flex flex-col gap-2.5 items-center">
+            <Text fz="sm" c="dimmed" ta="left" className="w-full">인증번호 6자리</Text>
             <PinInput length={6} type="number" oneTimeCode autoFocus size="md" value={code} onChange={setCode} onComplete={check} aria-label="인증번호" />
             <Button size="md" fullWidth disabled={code.length < 6} onClick={() => check()}>확인</Button>
-          </Stack>
+          </div>
         )}
         {err && <Text c="red" role="alert">{err}</Text>}
-      </Stack>
+      </div>
     </Card>
   );
 }

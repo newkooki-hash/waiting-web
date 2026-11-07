@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, Checkbox, Group, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Badge, Button, Checkbox, Text, TextInput, Title } from '@mantine/core';
 import { post } from '../lib/api';
 import { Heading, Panel, bind } from './ui';
 import type { Intake as IntakeInfo } from './types';
@@ -54,40 +54,40 @@ export function Intake({ intake, reload }: { intake: IntakeInfo | null; reload: 
   return (
     <section>
       <Heading title="QR 관리" sub="손님은 매장의 QR 코드를 스캔해야 접수할 수 있습니다." />
-      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-        <Panel id="qrPanel">
-          <div id="qr" dangerouslySetInnerHTML={{ __html: qrHtml }} />
-          <Group mt="sm" className="no-print"><Button onClick={() => window.print()}>QR 인쇄</Button></Group>
+      <div className="grid gap-4 grid-cols-1 min-[48em]:grid-cols-2">
+        <Panel className="print:border-0 print:text-center">
+          <div className="inline-block bg-white p-2.5 rounded-lg leading-none [&_img]:w-[220px] [&_img]:h-[220px] print:[&_img]:w-[340px] print:[&_img]:h-[340px]" dangerouslySetInnerHTML={{ __html: qrHtml }} />
+          <div className="flex gap-4 items-center flex-wrap mt-3 print:hidden"><Button onClick={() => window.print()}>QR 인쇄</Button></div>
         </Panel>
-        <Stack className="no-print" gap={0}>
+        <div className="flex flex-col gap-0 print:hidden">
           <Panel>
-            <Title order={5} mb="xs">접수 상태</Title>
-            <Group>
+            <Title order={5} className="mb-2.5">접수 상태</Title>
+            <div className="flex gap-4 items-center flex-wrap">
               <Badge size="xl" variant="light" color={intake.openNow ? 'green' : 'red'}>{state}</Badge>
               <Button color={intake.open ? 'red' : undefined} variant={intake.open ? 'light' : 'filled'} onClick={toggle}>{intake.open ? '접수 중지하기' : '접수 시작하기'}</Button>
-            </Group>
-            <Text c="dimmed" fz="sm" mt="xs">접수를 중지해도 이미 대기 중인 손님은 유지됩니다.</Text>
+            </div>
+            <Text c="dimmed" fz="sm" className="mt-2.5">접수를 중지해도 이미 대기 중인 손님은 유지됩니다.</Text>
           </Panel>
           <Panel>
-            <Title order={5} mb="xs">접수 가능 시간</Title>
-            <Group align="flex-end">
+            <Title order={5} className="mb-2.5">접수 가능 시간</Title>
+            <div className="flex gap-4 items-end flex-wrap">
               <Checkbox label="시간 제한 사용" checked={enabled} onChange={(e) => setEnabled(e.currentTarget.checked)} />
-              <TextInput type="time" aria-label="시작" w={130} {...bind(start, setStart)} />
-              <Text pb={6}>~</Text>
-              <TextInput type="time" aria-label="종료" w={130} {...bind(end, setEnd)} />
+              <TextInput type="time" aria-label="시작" {...bind(start, setStart)} className="w-[130px]" />
+              <Text className="pb-[6px]">~</Text>
+              <TextInput type="time" aria-label="종료" {...bind(end, setEnd)} className="w-[130px]" />
               <Button loading={saving} onClick={saveSched}>저장</Button>
-              <Text role="status" c={msg.color} pb={6}>{msg.text}</Text>
-            </Group>
-            <Text c="dimmed" fz="sm" mt="xs">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다 (예: 18:00~02:00). 시간대 밖에는 QR로 접수할 수 없습니다.</Text>
+              <Text role="status" c={msg.color} className="pb-[6px]">{msg.text}</Text>
+            </div>
+            <Text c="dimmed" fz="sm" className="mt-2.5">종료가 시작보다 빠르면 자정을 넘기는 시간으로 봅니다 (예: 18:00~02:00). 시간대 밖에는 QR로 접수할 수 없습니다.</Text>
           </Panel>
           <Panel>
-            <Title order={5} mb="xs">QR 코드 관리</Title>
+            <Title order={5} className="mb-2.5">QR 코드 관리</Title>
             <Button color="red" variant="light" onClick={rotate}>QR 새로 만들기</Button>
-            <Text c="dimmed" fz="sm" mt="xs">새로 만들면 이전에 출력한 QR은 사용할 수 없습니다. 인쇄물을 교체할 때만 누르세요.</Text>
-            <Text c="dimmed" fz="xs" mt="xs" style={{ wordBreak: 'break-all' }}>{intake.url}</Text>
+            <Text c="dimmed" fz="sm" className="mt-2.5">새로 만들면 이전에 출력한 QR은 사용할 수 없습니다. 인쇄물을 교체할 때만 누르세요.</Text>
+            <Text c="dimmed" fz="xs" className="mt-2.5 break-all">{intake.url}</Text>
           </Panel>
-        </Stack>
-      </SimpleGrid>
+        </div>
+      </div>
     </section>
   );
 }

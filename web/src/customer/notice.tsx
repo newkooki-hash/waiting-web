@@ -10,8 +10,8 @@ function App() {
 
   return (
     <Page title="오란다 볼링 공지사항">
-      <Title order={3} mb="md">공지사항</Title>
-      <Text c="dimmed" fz="sm" mb="sm"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
+      <Title order={3} className="mb-4">공지사항</Title>
+      <Text c="dimmed" fz="sm" className="mb-3"><Anchor href="/" c="dimmed">← 대기 접수</Anchor></Text>
       {notices && (notices.length ? (
         <Accordion variant="separated" radius="md">
           {notices.map((n, i) => (
@@ -21,7 +21,7 @@ function App() {
                 <Text fw={700}>{n.title}</Text>
               </Accordion.Control>
               <Accordion.Panel>
-                {n.body ? <Text style={{ whiteSpace: 'pre-wrap' }}>{n.body}</Text> : <Text c="dimmed">내용이 없습니다.</Text>}
+                {n.body ? <Text className="whitespace-pre-wrap">{n.body}</Text> : <Text c="dimmed">내용이 없습니다.</Text>}
               </Accordion.Panel>
             </Accordion.Item>
           ))}

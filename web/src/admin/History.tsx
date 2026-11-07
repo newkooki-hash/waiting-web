@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Badge, Button, Group, Table, Text, TextInput } from '@mantine/core';
+import { Badge, Button, Table, Text, TextInput } from '@mantine/core';
 import { today } from '../lib/api';
 import { DataTable, EmptyRow, Heading, Panel, Rv, STATUS, STATUS_COLOR, bind, useLoad } from './ui';
 
@@ -28,15 +28,15 @@ export function History() {
       <Heading title="이력 조회" sub="접수일 기준으로 찾습니다. 취소·종료된 건도 포함됩니다." />
       <Panel>
         <form onSubmit={(ev) => { ev.preventDefault(); load(); }}>
-          <Group align="flex-end">
+          <div className="flex gap-4 items-end flex-wrap">
             <TextInput type="date" aria-label="시작일" {...bind(from, setFrom)} />
-            <Text pb={6}>~</Text>
+            <Text className="pb-[6px]">~</Text>
             <TextInput type="date" aria-label="종료일" {...bind(to, setTo)} />
-            <TextInput placeholder="이름 또는 전화" w={150} {...bind(q, setQ)} />
-            <TextInput placeholder="레인" inputMode="numeric" w={80} {...bind(lane, setLane)} />
+            <TextInput placeholder="이름 또는 전화" {...bind(q, setQ)} className="w-[150px]" />
+            <TextInput placeholder="레인" inputMode="numeric" {...bind(lane, setLane)} className="w-[80px]" />
             <Button type="submit">조회</Button>
             <Button variant="default" onClick={() => { location.href = '/api/admin/history?format=csv&' + query(); }}>엑셀(CSV) 내려받기</Button>
-          </Group>
+          </div>
         </form>
       </Panel>
       <DataTable head={['접수', '이름', '전화', '인원', '신발', '상태', '레인', '대기', '경로', '메모·사유']} mb="xs">

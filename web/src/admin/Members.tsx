@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Badge, Button, FileInput, Group, Modal, Table, Text, TextInput } from '@mantine/core';
+import { Badge, Button, FileInput, Modal, Table, Text, TextInput } from '@mantine/core';
 import { post } from '../lib/api';
 import { Actions, DataTable, EmptyRow, Heading, Meta, Panel, Rv, bind, useLoad } from './ui';
 import { confirmDialog, alertDialog } from '../lib/dialogs';
@@ -79,33 +79,33 @@ export function Members() {
       <Heading title="회원관리" sub="연락처와 이메일은 일부만 표시됩니다. 원문은 비밀번호를 다시 입력해야 볼 수 있고, 조회 기록이 남습니다." />
       <Panel>
         <form onSubmit={(ev) => { ev.preventDefault(); go(1); }}>
-          <Group align="flex-end">
-            <TextInput placeholder="이름·연락처·이메일 검색" w={240} {...bind(q, setQ)} />
+          <div className="flex gap-4 items-end flex-wrap">
+            <TextInput placeholder="이름·연락처·이메일 검색" {...bind(q, setQ)} className="w-[240px]" />
             <Button type="submit">검색</Button>
-            <span style={{ flex: 1 }}></span>
+            <span className="flex-1"></span>
             <FileInput placeholder="CSV 파일 선택" accept=".csv,text/csv" aria-label="가져올 CSV 파일" clearable value={file} onChange={setFile} />
             <Button variant="default" loading={importing} onClick={importCsv}>CSV 가져오기</Button>
-          </Group>
+          </div>
         </form>
       </Panel>
       <Panel>
         <form onSubmit={(ev) => { ev.preventDefault(); doLift(); }}>
-          <Group align="flex-end">
-            <Text fw={700} pb={6}>재가입 제한 해제</Text>
-            <TextInput placeholder="탈퇴한 번호" inputMode="numeric" required w={150} {...bind(liftPhone, setLiftPhone)} />
+          <div className="flex gap-4 items-end flex-wrap">
+            <Text fw={700} className="pb-[6px]">재가입 제한 해제</Text>
+            <TextInput placeholder="탈퇴한 번호" inputMode="numeric" required {...bind(liftPhone, setLiftPhone)} className="w-[150px]" />
             <Button type="submit" variant="default">해제</Button>
-            <Text c="dimmed" fz="sm" pb={6}>탈퇴한 번호는 일정 기간 다시 가입할 수 없습니다.</Text>
-            <Text role="status" c={lift.ok ? 'green' : 'red'} pb={6}>{lift.text}</Text>
-          </Group>
+            <Text c="dimmed" fz="sm" className="pb-[6px]">탈퇴한 번호는 일정 기간 다시 가입할 수 없습니다.</Text>
+            <Text role="status" c={lift.ok ? 'green' : 'red'} className="pb-[6px]">{lift.text}</Text>
+          </div>
         </form>
       </Panel>
       {report && (
         <Panel>
           {report.error ? <Text c="red">{report.error}</Text> : (
-            <Group>
+            <div className="flex gap-4 items-center flex-wrap">
               <Text><b>가져오기 결과</b> 전체 {report.total}건 · 추가 {report.imported}건 · 중복 건너뜀 {report.duplicate}건 · 오류 {report.errors.length}건</Text>
               {report.errors.length > 0 && <Button variant="default" size="xs" onClick={() => downloadErrors(report.errors)}>오류 행 내려받기</Button>}
-            </Group>
+            </div>
           )}
         </Panel>
       )}
@@ -123,11 +123,11 @@ export function Members() {
           </Table.Tr>
         )) : <EmptyRow cols={9}>회원이 없습니다. CSV로 가져오거나 손님이 번호 인증을 하면 추가됩니다.</EmptyRow>}
       </DataTable>
-      <Group>
+      <div className="flex gap-4 items-center flex-wrap">
         <Button variant="default" disabled={page <= 1} onClick={() => go(page - 1)}>이전</Button>
         <Text role="status">{page} / {last}쪽 · 총 {total}명</Text>
         <Button variant="default" disabled={page >= last} onClick={() => go(page + 1)}>다음</Button>
-      </Group>
+      </div>
       <Modal opened={log !== null} onClose={() => setLog(null)} title="변경 이력" centered size="lg">
         {log && (log.length ? (
           <Table verticalSpacing="xs">
@@ -138,7 +138,7 @@ export function Members() {
             </Table.Tbody>
           </Table>
         ) : <Meta>기록이 없습니다.</Meta>)}
-        <Group justify="flex-end" mt="md"><Button variant="default" onClick={() => setLog(null)}>닫기</Button></Group>
+        <div className="flex gap-4 items-center justify-end flex-wrap mt-4"><Button variant="default" onClick={() => setLog(null)}>닫기</Button></div>
       </Modal>
     </section>
   );

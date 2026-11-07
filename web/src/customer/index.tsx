@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { Alert, Anchor, Button, Group, Image, NativeSelect, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Button, Image, NativeSelect, Text, TextInput, Title } from '@mantine/core';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
@@ -87,7 +87,7 @@ function App() {
     reload();
   };
 
-  const heading = <Title order={3} mb="md">오란다 볼링 대기 접수</Title>;
+  const heading = <Title order={3} className="mb-4">오란다 볼링 대기 접수</Title>;
   if (!me) return <Page title="오란다 볼링 대기 접수">{heading}</Page>;
 
   const logged = !!me.user;
@@ -107,9 +107,9 @@ function App() {
   return (
     <Page title="오란다 볼링 대기 접수">
       {heading}
-      <Stack gap={8} mb="md">
+      <div className="flex flex-col gap-2 mb-4">
         {banners.map((b) => <Image key={b.id} src={`/banner/${b.id}`} alt="이벤트" loading="lazy" radius="md" />)}
-      </Stack>
+      </div>
 
       {entry ? (
         <>
@@ -123,11 +123,11 @@ function App() {
           {!blocked && needConsent && <Consent key={me.consent!.missing.join()} me={me} onSaved={reload} />}
           {!blocked && !logged && (
             <Card>
-              <Stack gap="sm">
+              <div className="flex flex-col gap-3">
                 <Text ta="center" c="dimmed">간편 로그인 후 대기 접수를 할 수 있습니다.</Text>
                 <Providers me={me} />
                 {loginErr && <Alert color="red" role="alert">{loginErr}</Alert>}
-              </Stack>
+              </div>
             </Card>
           )}
           {!blocked && logged && !verified && !needConsent && (
@@ -135,26 +135,32 @@ function App() {
           )}
           {!blocked && verified && !needConsent && (
             <Card component="form" onSubmit={submit}>
-              <Stack gap="sm">
+              <div className="flex flex-col gap-3">
                 <TextInput label="이름" size="md" autoComplete="name" maxLength={20} required value={name} onChange={(e) => setName(e.currentTarget.value)} />
                 <Text c="dimmed" fz="sm">인증된 번호: {me.user!.phone}</Text>
-                <NativeSelect label="인원 (최대 8명)" size="md" value={party} onChange={(e) => changeParty(Number(e.currentTarget.value))}
-                  data={Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: `${i + 1}명` }))} />
-                <Group align="flex-end" wrap="nowrap">
-                  <NativeSelect label="신발 대여 인원" size="md" style={{ flex: 1 }} value={shoes}
-                    onChange={(e) => { setShoesTouched(true); setShoes(Number(e.currentTarget.value)); }}
-                    data={Array.from({ length: party + 1 }, (_, i) => ({ value: String(i), label: i === 0 ? '대여 안함' : i + '명' }))} />
+                <NativeSelect label="인원 (최대 8명)"
+      size="md"
+      value={party}
+      onChange={(e) => changeParty(Number(e.currentTarget.value))}
+      data={Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: `${i + 1}명` }))} />
+                <div className="flex gap-4 items-end flex-nowrap">
+                  <NativeSelect label="신발 대여 인원"
+      size="md"
+      className="flex-1"
+      value={shoes}
+      onChange={(e) => { setShoesTouched(true); setShoes(Number(e.currentTarget.value)); }}
+      data={Array.from({ length: party + 1 }, (_, i) => ({ value: String(i), label: i === 0 ? '대여 안함' : i + '명' }))} />
                   <Button variant="default" size="md" onClick={() => { setShoesTouched(true); setShoes(0); }}>전체 대여 안함</Button>
-                </Group>
+                </div>
                 <Button type="submit" size="md" fullWidth>대기 접수</Button>
                 {err && <Text c="red" role="alert">{err}</Text>}
-              </Stack>
+              </div>
             </Card>
           )}
         </>
       )}
 
-      <Text ta="center" c="dimmed" mt="lg" fz="sm">
+      <Text ta="center" c="dimmed" fz="sm" className="mt-5">
         <Anchor href="/tournament" c="dimmed">정기 대회 신청 →</Anchor> · <Anchor href="/calendar" c="dimmed">행사 일정 →</Anchor> · <Anchor href="/notice" c="dimmed">공지사항 →</Anchor>
       </Text>
     </Page>
@@ -181,9 +187,9 @@ function StatusCard({ entry: e, onCancel, onAgain }: { entry: PublicEntry; onCan
   return (
     <Card>
       <Text ta="center" c="dimmed">{who}</Text>
-      <Text ta="center" fz={44} fw={700} my="xs" c={called ? 'orange' : undefined}>{main}</Text>
+      <Text ta="center" fz={44} fw={700} c={called ? 'orange' : undefined} className="my-2.5">{main}</Text>
       <Text ta="center" c="dimmed" component="div">{sub}</Text>
-      {(e.status === 'WAITING' || e.status === 'CALLED') && <Button variant="default" fullWidth mt="md" size="md" onClick={onCancel}>대기 취소</Button>}
+      {(e.status === 'WAITING' || e.status === 'CALLED') && <Button variant="default" fullWidth size="md" onClick={onCancel} className="mt-4">대기 취소</Button>}
     </Card>
   );
 }

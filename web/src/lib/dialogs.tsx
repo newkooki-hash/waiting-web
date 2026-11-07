@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Button, Group, Modal, Stack, Text, TextInput } from '@mantine/core';
+import { Button, Modal, Text, TextInput } from '@mantine/core';
 
 /**
  * confirm / prompt / alert 를 대신하는 모달. 브라우저 기본 창처럼 await로 결과를 받는다.
@@ -73,18 +73,24 @@ export function DialogHost() {
     <Modal opened={!!cur} onClose={cancel} title={title} centered closeOnClickOutside={cur?.kind !== 'form'} withCloseButton={false} zIndex={1000}>
       {cur && (
         <form onSubmit={submit}>
-          <Stack gap="sm">
-            {cur.message && <Text style={{ whiteSpace: 'pre-line' }}>{cur.message}</Text>}
+          <div className="flex flex-col gap-3">
+            {cur.message && <Text className="whitespace-pre-line">{cur.message}</Text>}
             {cur.fields?.map((f, i) => (
-              <TextInput key={f.name} label={cur.fields!.length > 1 || cur.title !== f.label ? f.label : undefined} aria-label={f.label} placeholder={f.placeholder}
-                required={f.required} inputMode={f.inputMode} data-autofocus={i === 0 ? true : undefined}
-                value={values[f.name] ?? ''} onChange={(e) => setValues({ ...values, [f.name]: e.currentTarget.value })} />
+              <TextInput key={f.name}
+      label={cur.fields!.length > 1 || cur.title !== f.label ? f.label : undefined}
+      aria-label={f.label}
+      placeholder={f.placeholder}
+      required={f.required}
+      inputMode={f.inputMode}
+      data-autofocus={i === 0 ? true : undefined}
+      value={values[f.name] ?? ''}
+      onChange={(e) => setValues({ ...values, [f.name]: e.currentTarget.value })} />
             ))}
-            <Group justify="flex-end">
+            <div className="flex gap-4 items-center justify-end flex-wrap">
               {cur.kind !== 'alert' && <Button variant="default" type="button" onClick={cancel}>취소</Button>}
               <Button type="submit" color={cur.danger ? 'red' : undefined} data-autofocus={cur.kind !== 'form' ? true : undefined}>{cur.confirmLabel ?? '확인'}</Button>
-            </Group>
-          </Stack>
+            </div>
+          </div>
         </form>
       )}
     </Modal>

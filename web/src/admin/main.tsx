@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { Box, Button, Container, Group, Menu, Paper, PasswordInput, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
+import { Button, Menu, Paper, PasswordInput, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
 import { LuChevronDown } from 'react-icons/lu';
 import { mountApp } from '../lib/app';
-import './admin.css';
 import { post } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
 import { Blacklist } from './Blacklist';
@@ -39,29 +38,31 @@ function Login({ onDone }: { onDone: () => void }) {
     onDone();
   };
   return (
-    <Paper component="form" onSubmit={submit} withBorder radius="md" p="xl" maw={340} mx="auto" mt="12vh">
-      <Title order={4} mb="md">오란다 볼링 관리자</Title>
-      <TextInput placeholder="아이디" autoComplete="username" required mb="sm" value={id} onChange={(e) => setId(e.currentTarget.value)} />
-      <PasswordInput placeholder="비밀번호" autoComplete="current-password" required mb="sm" value={pw} onChange={(e) => setPw(e.currentTarget.value)} />
+    <Paper component="form" onSubmit={submit} withBorder radius="md" className="p-8 max-w-[340px] mx-auto mt-[12vh]">
+      <Title order={4} className="mb-4">오란다 볼링 관리자</Title>
+      <TextInput placeholder="아이디" autoComplete="username" required value={id} onChange={(e) => setId(e.currentTarget.value)} className="mb-3" />
+      <PasswordInput placeholder="비밀번호" autoComplete="current-password" required value={pw} onChange={(e) => setPw(e.currentTarget.value)} className="mb-3" />
       <Button type="submit" fullWidth>로그인</Button>
-      {err && <Text c="red" role="alert" mt="sm">{err}</Text>}
+      {err && <Text c="red" role="alert" className="mt-3">{err}</Text>}
     </Paper>
   );
 }
 
 /** 상단 메뉴 한 칸 */
+const NAV = 'flex items-center gap-2 h-full px-4 font-semibold whitespace-nowrap no-underline cursor-pointer border-b-[3px]';
+const ACTIVE = 'text-white border-[var(--mantine-color-teal-5)]';
+const IDLE = 'text-[var(--mantine-color-gray-5)] border-transparent';
 function NavLink({ active, children, ...rest }: { active?: boolean; children: React.ReactNode } & React.ComponentProps<'a'>) {
   return (
-    <Box component="a" {...rest} px="md" h="100%" c={active ? 'white' : 'gray.5'}
-      style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, whiteSpace: 'nowrap', textDecoration: 'none', cursor: 'pointer', borderBottom: `3px solid ${active ? 'var(--mantine-color-teal-5)' : 'transparent'}` }}>
+    <a {...rest} className={`${NAV} ${active ? ACTIVE : IDLE}`}>
       {children}
-    </Box>
+    </a>
   );
 }
 
 const Dot = ({ color, blink, title }: { color?: string; blink?: boolean; title?: string }) => (
-  <Box component="span" title={title} w={9} h={9}
-    style={{ borderRadius: '50%', background: color ?? 'var(--mantine-color-red-6)', animation: blink ? 'blink 1s steps(2, start) infinite' : undefined }} />
+  <span title={title} style={{ background: color ?? 'var(--mantine-color-red-6)' }}
+    className={`inline-block w-[9px] h-[9px] rounded-full ${blink ? 'animate-blink' : ''}`} />
 );
 
 function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthorized: () => void }) {
@@ -92,11 +93,11 @@ function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthori
 
   return (
     <div>
-      <Box component="header" bg="dark.8" c="white" style={{ position: 'sticky', top: 0, zIndex: 5 }}>
-        <Container size={1100} px="md">
-          <Group gap="lg" h={56} wrap="nowrap">
-            <Text fw={700} visibleFrom="md" style={{ whiteSpace: 'nowrap' }}>오란다 볼링파크</Text>
-            <Group component="nav" aria-label="관리 메뉴" gap={4} h="100%" wrap="nowrap" style={{ flex: 1 }}>
+      <header className="sticky top-0 z-[5] bg-[var(--mantine-color-dark-8)] text-white">
+        <div className="mx-auto w-full max-w-[1100px] px-4">
+          <div className="flex gap-5 items-center flex-nowrap h-[56px]">
+            <span className="font-bold whitespace-nowrap max-[991px]:hidden">오란다 볼링파크</span>
+            <nav aria-label="관리 메뉴" className="flex flex-1 gap-1 items-center flex-nowrap h-full">
               <NavLink href="#queue" active={view === 'queue'}>대기 관리</NavLink>
               <NavLink href="#tournaments" active={view === 'tournaments'}>대회 관리</NavLink>
               <NavLink href="#intake" active={view === 'intake'}>QR 관리 <Dot color={intakeColor} title={intakeTitle} /></NavLink>
@@ -106,8 +107,7 @@ function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthori
               </NavLink>
               <Menu trigger="hover" openDelay={50} closeDelay={150} position="bottom-start" withinPortal>
                 <Menu.Target>
-                  <UnstyledButton h="100%" px="md" c={inSettings ? 'white' : 'gray.5'} fw={600}
-                    style={{ display: 'flex', alignItems: 'center', gap: 6, borderBottom: `3px solid ${inSettings ? 'var(--mantine-color-teal-5)' : 'transparent'}` }}>
+                  <UnstyledButton className={`${NAV} ${inSettings ? ACTIVE : IDLE}`}>
                     설정 <LuChevronDown />
                   </UnstyledButton>
                 </Menu.Target>
@@ -117,12 +117,12 @@ function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthori
                   ))}
                 </Menu.Dropdown>
               </Menu>
-            </Group>
+            </nav>
             <Button variant="white" color="dark" size="xs" onClick={async () => { await post('/api/admin/logout'); onLogout(); }}>로그아웃</Button>
-          </Group>
-        </Container>
-      </Box>
-      <Container size={1100} px="md" pt="lg" pb={48}>
+          </div>
+        </div>
+      </header>
+      <div className="mx-auto w-full max-w-[1100px] px-4 pt-5 pb-12">
         {view === 'queue' && <Queue tick={tick} onUnauthorized={onUnauthorized} />}
         {view === 'history' && <History />}
         {view === 'tournaments' && <Tournaments />}
@@ -132,7 +132,7 @@ function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthori
         {view === 'members' && <Members />}
         {view === 'blacklist' && <Blacklist onChanged={() => setTick((t) => t + 1)} />}
         {view === 'intake' && <Intake intake={intake} reload={loadIntake} />}
-      </Container>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,10 @@
+/* 레이어 순서: Mantine 컴포넌트 스타일 위에 Tailwind 유틸리티가 얹힌다 */
+@layer theme, base, mantine, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "@mantine/core/styles.layer.css";
+
+@theme {
+  --animate-blink: blink 1s steps(2, start) infinite;
+  @keyframes blink { to { visibility: hidden; } }
+}

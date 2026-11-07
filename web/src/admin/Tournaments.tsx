@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Badge, Box, Button, Group, Table, Text, TextInput, Textarea, Title } from '@mantine/core';
+import { Badge, Button, Table, Text, TextInput, Textarea, Title } from '@mantine/core';
 import { post } from '../lib/api';
 import { formDialog, promptDialog } from '../lib/dialogs';
 import { Actions, DataTable, EmptyRow, Heading, Meta, Msg, Panel, Rv, bind, useLoad } from './ui';
@@ -60,22 +60,22 @@ export function Tournaments() {
       <Heading title="대회 관리" sub="접수 기간과 정원을 정하면 손님이 /tournament 페이지에서 신청합니다. 정원이 차면 대기로 받고, 자리가 나면 순서대로 입금 대기로 올라갑니다." />
       <Panel ref={formRef}>
         <form onSubmit={(ev) => { ev.preventDefault(); save(); }}>
-          <Group align="flex-end">
-            <Text fw={700} pb={6}>{editId ? '대회 수정' : '대회 등록'}</Text>
-            <TextInput placeholder="대회명" maxLength={50} required w={200} {...set('name')} />
+          <div className="flex gap-4 items-end flex-wrap">
+            <Text fw={700} className="pb-[6px]">{editId ? '대회 수정' : '대회 등록'}</Text>
+            <TextInput placeholder="대회명" maxLength={50} required {...set('name')} className="w-[200px]" />
             <TextInput label="대회" type="datetime-local" required {...set('event')} />
-          </Group>
-          <Group align="flex-end" mt="sm">
+          </div>
+          <div className="flex gap-4 items-end flex-wrap mt-3">
             <TextInput label="신청 시작" type="datetime-local" required {...set('start')} />
             <TextInput label="신청 종료" type="datetime-local" required {...set('end')} />
-            <TextInput placeholder="정원" inputMode="numeric" required w={80} {...set('cap')} />
-            <TextInput placeholder="참가비(원)" inputMode="numeric" w={110} {...set('fee')} />
-          </Group>
-          <Group align="flex-start" mt="sm" wrap="nowrap">
-            <Textarea rows={7} placeholder="신청 안내 (입금 계좌, 주의사항 등. 손님 신청 화면에 그대로 표시됩니다)" maxLength={2000} style={{ flex: 1 }} {...set('info')} />
+            <TextInput placeholder="정원" inputMode="numeric" required {...set('cap')} className="w-[80px]" />
+            <TextInput placeholder="참가비(원)" inputMode="numeric" {...set('fee')} className="w-[110px]" />
+          </div>
+          <div className="flex gap-4 items-start flex-nowrap mt-3">
+            <Textarea rows={7} placeholder="신청 안내 (입금 계좌, 주의사항 등. 손님 신청 화면에 그대로 표시됩니다)" maxLength={2000} className="flex-1" {...set('info')} />
             <Button type="submit">저장</Button>
             {editId && <Button variant="default" onClick={reset}>새 대회로</Button>}
-          </Group>
+          </div>
           <Msg>{msg}</Msg>
         </form>
       </Panel>
@@ -147,14 +147,14 @@ function Entries({ t, onChanged }: { t: T; onChanged: () => void }) {
   let n = 0;
   return (
     <Panel>
-      <Title order={5} mb="sm">{t.name} 신청자</Title>
-      <Box component="form" mb="sm" onSubmit={(ev) => { ev.preventDefault(); add(); }}>
-        <Group align="flex-end">
-          <TextInput placeholder="이름" maxLength={20} required w={120} {...bind(name, setName)} />
-          <TextInput placeholder="전화" inputMode="numeric" required w={150} {...bind(phone, setPhone)} />
+      <Title order={5} className="mb-3">{t.name} 신청자</Title>
+      <form onSubmit={(ev) => { ev.preventDefault(); add(); }} className="mb-3">
+        <div className="flex gap-4 items-end flex-wrap">
+          <TextInput placeholder="이름" maxLength={20} required {...bind(name, setName)} className="w-[120px]" />
+          <TextInput placeholder="전화" inputMode="numeric" required {...bind(phone, setPhone)} className="w-[150px]" />
           <Button type="submit">대리 신청</Button>
-        </Group>
-      </Box>
+        </div>
+      </form>
       <DataTable head={['#', '이름', '전화', '상태', '신청', '메모', '']} mb="xs">
         {rows.length ? rows.map((e) => {
           const del = e.status === 'DELETED';
@@ -163,7 +163,7 @@ function Entries({ t, onChanged }: { t: T; onChanged: () => void }) {
           return (
             <Table.Tr key={e.id} style={del ? { opacity: 0.55 } : undefined}>
               <Table.Td>{num}</Table.Td>
-              <Table.Td><Group gap={6}><Text fw={700}>{e.name}</Text>{e.manual && <Badge size="sm" variant="light" color="teal">대리</Badge>}</Group></Table.Td>
+              <Table.Td><div className="flex gap-[6px] items-center flex-wrap"><Text fw={700}>{e.name}</Text>{e.manual && <Badge size="sm" variant="light" color="teal">대리</Badge>}</div></Table.Td>
               <Table.Td><Rv type="tournament" id={e.id} masked={e.phone} /></Table.Td>
               <Table.Td>{T_STATUS[e.status]}{e.paidAt && <Meta>입금 {e.paidAt.slice(5, 16)}</Meta>}</Table.Td>
               <Table.Td>{e.appliedAt.slice(5, 16)}</Table.Td><Table.Td>{memo}</Table.Td>

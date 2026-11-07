@@ -13,16 +13,16 @@ function App() {
 
   return (
     <>
-      <Box bg="dark.8" c="gray.0" py="sm"><Container size={640}><Text fw={700}>오란다 볼링파크</Text></Container></Box>
-      <Container size={640} py="lg">
+      <div className="bg-[var(--mantine-color-dark-8)] text-[var(--mantine-color-gray-0)] py-3"><div className="mx-auto w-full max-w-[640px] px-4"><Text fw={700}>오란다 볼링파크</Text></div></div>
+      <div className="mx-auto w-full max-w-[640px] px-4 py-5">
         <Title order={3}>{p?.title}</Title>
         <Text c="dimmed" fz="sm">{p?.body ? `시행 ${(p.updatedAt || '').slice(0, 10)}` : ''}</Text>
         {p && (
-          <Paper withBorder radius="md" p="lg" mt="md">
-            <Text c={p.body ? undefined : 'dimmed'} style={{ whiteSpace: 'pre-wrap' }}>{p.body || '아직 등록된 내용이 없습니다.'}</Text>
+          <Paper withBorder radius="md" className="p-5 mt-4">
+            <Text c={p.body ? undefined : 'dimmed'} className="whitespace-pre-wrap">{p.body || '아직 등록된 내용이 없습니다.'}</Text>
           </Paper>
         )}
-      </Container>
+      </div>
     </>
   );
 }
