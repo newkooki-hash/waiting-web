@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Button, Menu, Paper, PasswordInput, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
 import { LuChevronDown } from 'react-icons/lu';
 import { mountApp } from '../lib/app';
-import { post } from '../lib/api';
+import { post, setBusinessStart } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
 import { Blacklist } from './Blacklist';
 import { Limits } from './Limits';
@@ -87,8 +87,8 @@ function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthori
 
   useEvents((data) => { setTick((t) => t + 1); if (data === 'new') sound.beep(); });
 
-  const intakeColor = !intake ? undefined : intake.openNow ? 'var(--mantine-color-green-5)' : intake.open ? 'var(--mantine-color-orange-5)' : undefined;
-  const intakeTitle = !intake ? '' : !intake.open ? '접수 중지' : intake.openNow ? '접수 중' : '접수 시간 외';
+  const intakeColor = !intake ? undefined : intake.openNow ? 'var(--mantine-color-green-5)' : undefined;
+  const intakeTitle = !intake ? '' : intake.openNow ? '대기접수 중' : '대기접수 시간 외';
   const soundColor = sound.dot === 'on' ? 'var(--mantine-color-green-5)' : sound.dot ? 'var(--mantine-color-orange-5)' : undefined;
   const inSettings = SETTINGS.some(([v]) => v === view);
 
@@ -143,11 +143,19 @@ function App() {
   // null = 확인 중, false = 로그인 필요
   const [authed, setAuthed] = useState<boolean | null>(null);
   useEffect(() => { document.title = '오란다 볼링 관리자'; }, []);
-  useEffect(() => { fetch('/api/admin/intake').then((r) => setAuthed(r.status !== 401)); }, []);
+  // 로그인이 확인되면 영업일 기준을 받아 둔 뒤 화면을 연다(이력·통계의 `오늘`이 영업일 기준이 되도록)
+  const check = useCallback(async () => {
+    const r = await fetch('/api/admin/intake');
+    if (r.status === 401) return setAuthed(false);
+    const b = await fetch('/api/admin/business-day').then((x) => x.json()).catch(() => null);
+    if (b?.start) setBusinessStart(b.start);
+    setAuthed(true);
+  }, []);
+  useEffect(() => { check(); }, [check]);
   const lost = useCallback(() => setAuthed(false), []);
 
   if (authed === null) return null;
-  if (!authed) return <Login onDone={() => setAuthed(true)} />;
+  if (!authed) return <Login onDone={check} />;
   return <RevealProvider><Shell onLogout={() => setAuthed(false)} onUnauthorized={lost} /></RevealProvider>;
 }
 

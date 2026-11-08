@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ActionIcon, Alert, Anchor, Button, Text, TextInput, Title } from '@mantine/core';
 import { LuMinus, LuPlus } from 'react-icons/lu';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
@@ -31,19 +31,20 @@ function App() {
   const params = new URLSearchParams(location.search);
 
   const clearToken = () => { store.clear(); setToken(null); };
+  const doneTokens = useRef(new Set<string>()); // 끝난(취소·만료·종료) 접수 토큰. 서버가 알려 준 옛 진행 중 접수로 되돌아가지 않게 기억한다
 
   // 서버가 알고 있는 진행 중 접수가 있으면 이 기기에도 기억시킨다
   useEffect(() => {
-    if (me?.user && !token && me.activeToken) { store.set(me.activeToken); setToken(me.activeToken); }
+    if (me?.user && !token && me.activeToken && !doneTokens.current.has(me.activeToken)) { store.set(me.activeToken); setToken(me.activeToken); }
   }, [me, token]);
 
   const refresh = useCallback(async () => {
-    if (!token) return setEntry(null);
+    if (!token) return; // 끝난 접수의 안내 카드는 사용자가 닫을 때까지 그대로 둔다
     const r = await fetch('/api/entries/' + token);
     if (!r.ok) { store.clear(); setToken(null); return setEntry(null); }
     const e: PublicEntry = await r.json();
     setEntry(e);
-    if (e.status === 'FINISHED' || e.status === 'CANCELED' || e.status === 'EXPIRED') { store.clear(); setToken(null); }
+    if (e.status === 'FINISHED' || e.status === 'CANCELED' || e.status === 'EXPIRED') { doneTokens.current.add(token); store.clear(); setToken(null); }
   }, [token]);
 
   useEffect(() => { if (me) refresh(); }, [me, refresh]);
@@ -113,6 +114,7 @@ function App() {
       ) : (
         <>
           {blocked && <Card><Text ta="center">{blocked}</Text></Card>}
+          {!blocked && <Text ta="center" c="dimmed" fz="sm" className="mb-3">대기접수 가능 시간: <b>{me.intake.hours.intake}</b></Text>}
           {logged && <UserBar me={me} onDone={userDone} />}
           {!blocked && needConsent && <Consent key={me.consent!.missing.join()} me={me} onSaved={reload} />}
           {!blocked && !logged && (
@@ -199,7 +201,7 @@ function StatusCard({ entry: e, limit, warn, onCancel, onAgain, onExpire }: { en
   let sub: ReactNode = '';
   if (e.status === 'WAITING') {
     main = `${e.position}번째`;
-    sub = e.position === 1 ? '곧 직원이 부릅니다. 매장에서 기다려 주세요.' : `앞에 ${(e.position ?? 1) - 1}팀이 대기 중입니다.`;
+    sub = !e.arrived ? '예상 순번입니다. 카운터에서 도착 확인을 받으면 도착한 순서대로 순번이 정해져요.' : e.position === 1 ? '곧 직원이 부릅니다. 매장에서 기다려 주세요.' : `앞에 ${(e.position ?? 1) - 1}팀이 대기 중입니다.`;
   } else if (e.status === 'EXPIRED') {
     main = '도착 만료'; sub = <>접수 후 {limit}분 안에 카운터에서 도착 확인을 받지 않아 대기가 만료되었습니다.<br />{warn && <><b>{noshowText(warn)}</b><br /></>}<Anchor component="button" type="button" onClick={onAgain}>다시 접수하기</Anchor></>;
   } else if (e.status === 'ASSIGNED') {

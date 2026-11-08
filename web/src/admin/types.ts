@@ -16,10 +16,14 @@ export interface QueueEntry {
   visits: number | null;
 }
 
+export interface Hours { h24: boolean; start: string; end: string }
 export interface Intake {
-  open: boolean;
   openNow: boolean;
-  schedule: { enabled: boolean; start: string; end: string };
+  biz: Hours;
+  wait: { same: boolean; start: string; end: string };
+  hours: { business: string; intake: string; intake24: boolean };
+  dayStart: string; // 24시간 영업일 때 직접 정한 영업일 기준 시각
+  bizDay: string; // 지금 적용되는 영업일 기준 시각
   url: string;
 }
 

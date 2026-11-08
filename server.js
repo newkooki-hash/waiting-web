@@ -225,29 +225,37 @@ const mergeUsers = (ownerId, fromId) => {
   } catch (err) { db.exec('ROLLBACK'); throw err; }
 };
 
-// 접수 설정: 접수 on/off, QR에 담기는 접수 토큰
+// 접수 설정: 영업시간, 대기접수 시간 (수동 접수 on/off 스위치는 쓰지 않는다)
 db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
 const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
 const setSetting = (k, v) => db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
-if (getSetting('intake_open') === undefined) setSetting('intake_open', '1');
-const intakeSwitch = () => getSetting('intake_open') === '1'; // 수동 스위치
 // 접수 가능 시간대: 시작 > 종료이면 자정을 넘기는 시간대(예: 18:00~02:00)로 본다. 서버 시간대 기준
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+// 영업일 기준: 이 시각 이전에 생긴 접수·배정은 전날 영업일로 본다. 예) 05:00 → 새벽 00:00~04:59는 전날. QR 관리의 영업시간에서 정해진다
+// 24시간 영업이면 설정값(기본 00:00), 아니면 영업시간에서 자동으로 정한다: 자정을 넘기는 영업(예: 10:00~02:00)은 종료 시각, 그 외에는 00:00
+const bizDayStored = () => { const v = getSetting('business_day_start'); return HHMM.test(v) ? v : '00:00'; };
+const bizStart = () => { const h = bizHours(); return h.h24 ? bizDayStored() : h.start > h.end ? h.end : '00:00'; };
+const bizMinutes = () => { const [h, m] = bizStart().split(':').map(Number); return h * 60 + m; };
+const bizToday = () => new Date(Date.now() - bizMinutes() * 60000).toLocaleDateString('sv'); // 서버 시각 기준 오늘 영업일
+const bizDate = (col) => `date(${col}, '-${bizMinutes()} minutes')`; // 칼럼 시각이 속한 영업일(SQL)
 const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
-const schedule = () => ({ enabled: getSetting('intake_schedule') === '1', start: getSetting('intake_start') || '10:00', end: getSetting('intake_end') || '22:00' });
 const inWindow = (min, start, end) => {
   const s = toMin(start), e = toMin(end);
   return s <= e ? min >= s && min < e : min >= s || min < e;
 };
-const intakeOpen = (now = new Date()) => {
-  if (!intakeSwitch()) return false;
-  const sc = schedule();
-  return !sc.enabled || inWindow(now.getHours() * 60 + now.getMinutes(), sc.start, sc.end);
-};
-const outsideWindow = () => { // 스위치는 켜져 있는데 시간대 밖일 때 안내할 시간대
-  const sc = schedule();
-  return intakeSwitch() && sc.enabled && !intakeOpen() ? `${sc.start}~${sc.end}` : null;
-};
+// 영업시간: 24시간 영업이거나 시작~종료(종료가 시작보다 빠르면 자정을 넘김). 설정이 없던 매장은 24시간으로 본다
+if (getSetting('biz_h24') === undefined) { // 예전 '접수 가능 시간' 설정이 있으면 영업시간으로 옮긴다
+  if (getSetting('intake_schedule') === '1') { setSetting('biz_h24', '0'); setSetting('biz_start', getSetting('intake_start') || '10:00'); setSetting('biz_end', getSetting('intake_end') || '22:00'); }
+  else setSetting('biz_h24', '1');
+}
+const bizHours = () => ({ h24: getSetting('biz_h24') !== '0', start: getSetting('biz_start') || '10:00', end: getSetting('biz_end') || '22:00' });
+// 대기접수 시간: 기본은 영업시간과 같고, 직접 정하면 그 시간에만 대기접수를 받는다. 사이트 접속·공지·대회 신청은 시간과 상관없이 열려 있다
+const waitSetting = () => ({ same: getSetting('wait_same') !== '0', start: getSetting('wait_start') || '10:00', end: getSetting('wait_end') || '22:00' });
+const intakeHours = () => { const w = waitSetting(); return w.same ? bizHours() : { h24: false, start: w.start, end: w.end }; };
+const hoursText = (h) => (h.h24 ? '24시간' : `${h.start}~${h.end}`);
+const intakeOpen = (now = new Date()) => { const h = intakeHours(); return h.h24 || inWindow(now.getHours() * 60 + now.getMinutes(), h.start, h.end); };
+const outsideWindow = () => (intakeOpen() ? null : hoursText(intakeHours())); // 시간 밖일 때 안내할 대기접수 시간
+const hoursInfo = () => ({ business: hoursText(bizHours()), intake: hoursText(intakeHours()), intake24: intakeHours().h24 }); // 손님 화면 안내용
 // 도착 확인(PRD 4.3): 접수 후 ARRIVAL_LIMIT_MIN분 안에 카운터에서 직원이 도착 확인을 하지 않으면 '도착 만료(EXPIRED)' 상태로 바뀐다.
 // 취소(CANCELED)와 다른 상태이고, 타이머 없이 대기 목록·조회 요청 때마다 접수 시각과 비교해 바꾼다.
 // 만료 시각(finished_at)은 처리한 시각이 아니라 접수+N분이다. 직원의 도착 확인과 겹쳐도 arrived_at 조건 덕분에 도착이 이긴다.
@@ -408,9 +416,11 @@ const intakeBlocked = (req, res) => {
 };
 const SECURE = oauth.BASE_URL.startsWith('https') ? '; Secure' : '';
 const adminCookie = (token) => `admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ADMIN_SESSION_MS / 1000}${SECURE}`;
-const DEV_NO_LOGIN = process.env.DEV_NO_LOGIN === '1' && /^https?:\/\/(localhost|127\.0\.0\.1)/.test(oauth.BASE_URL); // 로컬 전용 관리자 로그인 생략
+// 로컬 전용 관리자 로그인 생략: DEV_NO_LOGIN=1 이고 요청 주소가 localhost·127.0.0.1 일 때만(.env 의 BASE_URL 과 무관). 운영 서버에는 이 설정이 없다
+const DEV_NO_LOGIN = process.env.DEV_NO_LOGIN === '1';
+const isLocalHost = (req) => /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(req.headers.host || '');
 const isAdmin = (req) => {
-  if (DEV_NO_LOGIN) return true;
+  if (DEV_NO_LOGIN && isLocalHost(req)) return true;
   const t = cookie(req, 'admin');
   return !!t && !!db.prepare('SELECT 1 FROM admin_sessions WHERE token=? AND expires_at > ?').get(t, Date.now());
 };
@@ -438,7 +448,9 @@ const publicView = (e) => ({
   status: e.status,
   lanes: e.lanes,
   position: e.status === 'WAITING'
-    ? db.prepare("SELECT COUNT(*) n FROM entries WHERE status='WAITING' AND seq < ?").get(e.seq).n + 1
+    ? (e.arrived_at
+      ? db.prepare("SELECT COUNT(*) n FROM entries WHERE status='WAITING' AND arrived_at IS NOT NULL AND seq < ?").get(e.seq).n + 1
+      : db.prepare("SELECT (SELECT COUNT(*) FROM entries WHERE status='WAITING' AND arrived_at IS NOT NULL) + COUNT(*) + 1 n FROM entries WHERE status='WAITING' AND arrived_at IS NULL AND seq < ?").get(e.seq).n)
     : null,
 });
 
@@ -458,7 +470,7 @@ const api = {
       user: u ? { name: u.name, provider: u.provider, providers: providersOf(u.id), phone: maskPhone(u.phone), fullMember: isFullMember(u.id, u.phone) } : null,
       activeToken: active?.token || null,
       last: (u && db.prepare('SELECT party_size AS party, shoes FROM entries WHERE user_id=? ORDER BY id DESC LIMIT 1').get(u.id)) || null, // 지난 접수 인원·신발(다음 접수 기본값)
-      intake: { open: intakeOpen(), window: outsideWindow() },
+      intake: { open: intakeOpen(), window: outsideWindow(), hours: hoursInfo() },
       arrivalLimitMin: ARRIVAL_LIMIT_MIN,
       noshow: u ? noshowStatus(ep(u.phone)) : null, // 반복 미도착: 경고(warn)·제한 해제일(until)
       consent: u ? { missing: missingConsents(u.id), marketing: !!db.prepare('SELECT agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(u.id, 'marketing')?.agreed } : null,
@@ -586,34 +598,42 @@ const api = {
     res.setHeader('Set-Cookie', adminCookie(s));
     json(res, 200, { ok: true });
   },
+  'GET /api/admin/business-day': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    json(res, 200, { start: bizStart(), today: bizToday() });
+  },
   'GET /api/admin/intake': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    json(res, 200, { open: intakeSwitch(), openNow: intakeOpen(), schedule: schedule(), url: oauth.BASE_URL });
+    json(res, 200, { openNow: intakeOpen(), biz: bizHours(), wait: waitSetting(), hours: hoursInfo(), dayStart: bizDayStored(), bizDay: bizStart(), url: oauth.BASE_URL });
   },
-  'POST /api/admin/intake/open': async (req, res) => {
-    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    setSetting('intake_open', (await readBody(req)).open ? '1' : '0');
-    json(res, 200, { open: intakeSwitch() });
-  },
-  'POST /api/admin/intake/schedule': async (req, res) => {
+  // 영업시간(24시간 가능)과 대기접수 시간(영업시간과 같게/직접 설정)을 한 번에 저장한다
+  'POST /api/admin/intake/hours': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const b = await readBody(req);
-    if (b.enabled && (!HHMM.test(b.start) || !HHMM.test(b.end) || b.start === b.end))
-      return json(res, 400, { error: '시작·종료 시각을 HH:MM 형식으로, 서로 다르게 입력하세요.' });
-    setSetting('intake_schedule', b.enabled ? '1' : '0');
-    if (b.enabled) { setSetting('intake_start', b.start); setSetting('intake_end', b.end); }
-    json(res, 200, { schedule: schedule(), openNow: intakeOpen() });
+    const biz = b.biz || {}, wait = b.wait || {};
+    const bad = (x) => !HHMM.test(x.start) || !HHMM.test(x.end) || x.start === x.end;
+    if (!biz.h24 && bad(biz)) return json(res, 400, { error: '영업시간의 시작·종료를 HH:MM 형식으로, 서로 다르게 입력하세요. 24시간 영업이면 24시간을 선택하세요.' });
+    if (!wait.same && bad(wait)) return json(res, 400, { error: '대기접수 시간의 시작·종료를 HH:MM 형식으로, 서로 다르게 입력하세요.' });
+    if (biz.h24 && biz.dayStart !== undefined && (!HHMM.test(biz.dayStart) || biz.dayStart >= '12:00'))
+      return json(res, 400, { error: '영업일이 바뀌는 시각을 00:00~11:59 사이로 입력하세요.' });
+    if (biz.h24 && biz.dayStart !== undefined) setSetting('business_day_start', biz.dayStart);
+    setSetting('biz_h24', biz.h24 ? '1' : '0');
+    if (!biz.h24) { setSetting('biz_start', biz.start); setSetting('biz_end', biz.end); }
+    setSetting('wait_same', wait.same ? '1' : '0');
+    if (!wait.same) { setSetting('wait_start', wait.start); setSetting('wait_end', wait.end); }
+    notify();
+    json(res, 200, { openNow: intakeOpen(), biz: bizHours(), wait: waitSetting(), hours: hoursInfo(), dayStart: bizDayStored(), bizDay: bizStart() });
   },
   'GET /api/admin/entries': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     expireUnarrived();
     const rows = db.prepare(`SELECT * FROM entries WHERE status IN ${ACTIVE}
-      OR (status='ASSIGNED' AND date(assigned_at)=date('now','localtime'))
-      OR (status='EXPIRED' AND created_at >= datetime('now','localtime','-12 hours')) ORDER BY seq`).all();
+      OR (status='ASSIGNED' AND ${bizDate('assigned_at')}='${bizToday()}')
+      OR (status='EXPIRED' AND created_at >= datetime('now','localtime','-12 hours')) ORDER BY (arrived_at IS NULL), seq`).all();
     // 최근 3개월 방문 횟수: 같은 번호로 레인 배정을 받은 날 수(하루에 여러 번 배정돼도 1회). 번호가 없는 수기 건은 null.
     // 대기 중인 건은 아직 배정 전이라 자기 자신이 포함되지 않는다(화면도 대기 건에만 표시)
     const phones = [...new Set(rows.map((e) => e.phone).filter(Boolean))];
-    const visits = new Map(phones.length ? db.prepare(`SELECT phone, COUNT(DISTINCT date(assigned_at)) n FROM entries
+    const visits = new Map(phones.length ? db.prepare(`SELECT phone, COUNT(DISTINCT ${bizDate('assigned_at')}) n FROM entries
       WHERE assigned_at >= datetime('now','localtime','-${VISIT_MONTHS} months') AND phone IN (${phones.map(() => '?').join(',')}) GROUP BY phone`).all(...phones).map((r) => [r.phone, r.n]) : []);
     json(res, 200, {
       lanes: LANES,
@@ -784,8 +804,9 @@ const api = {
     expireUnarrived();
     json(res, 200, {
       now: new Date().toLocaleString('sv'), // 화면이 시작·마감 시각까지 남은 시간을 서버 시각으로 계산한다
-      intake: { open: intakeOpen(), window: outsideWindow() },
-      waitingTeams: db.prepare("SELECT COUNT(*) n FROM entries WHERE status='WAITING'").get().n,
+      intake: { open: intakeOpen(), window: outsideWindow(), hours: hoursInfo() },
+      // 홈 화면의 대기 팀 수는 도착 확인을 받은 실제 대기만 센다
+      waitingTeams: db.prepare("SELECT COUNT(*) n FROM entries WHERE status='WAITING' AND arrived_at IS NOT NULL").get().n,
       tournament: homeTournament(),
     });
   },
@@ -1011,17 +1032,17 @@ const api = {
   'GET /api/admin/stats': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const q = new URL(req.url, 'http://x').searchParams;
-    const today = new Date().toLocaleDateString('sv');
+    const today = bizToday();
     const to = dateOk(q.get('to')) ? q.get('to') : today;
     const from = dateOk(q.get('from')) ? q.get('from') : new Date(Date.parse(to + 'T00:00:00Z') - 29 * 86400000).toISOString().slice(0, 10);
     if (from > to) return json(res, 400, { error: '시작일이 종료일보다 늦습니다.' });
     if (Date.parse(to) - Date.parse(from) > 366 * 86400000) return json(res, 400, { error: '조회 기간은 최대 1년입니다.' });
-    const rows = db.prepare(`SELECT date(created_at) AS day, CAST(strftime('%H', created_at) AS INTEGER) AS hour, CAST(strftime('%w', created_at) AS INTEGER) AS dow,
+    const rows = db.prepare(`SELECT ${bizDate('created_at')} AS day, CAST(strftime('%H', created_at) AS INTEGER) AS hour, CAST(strftime('%w', ${bizDate('created_at')}) AS INTEGER) AS dow,
       party_size AS party, status, user_id IS NULL AS manual,
       CASE WHEN assigned_at IS NOT NULL THEN (julianday(assigned_at) - julianday(created_at)) * 1440
            WHEN status = 'CANCELED' AND finished_at IS NOT NULL THEN (julianday(finished_at) - julianday(created_at)) * 1440 END AS wait,
       assigned_at IS NOT NULL AS was_assigned
-      FROM entries WHERE date(created_at) BETWEEN ? AND ?`).all(from, to);
+      FROM entries WHERE ${bizDate('created_at')} BETWEEN ? AND ?`).all(from, to);
     const isAssigned = (r) => r.status === 'ASSIGNED' || r.status === 'FINISHED';
     const avg = (list) => (list.length ? Math.round(list.reduce((a, r) => a + r.wait, 0) / list.length * 10) / 10 : null);
     const summarize = (list) => {
@@ -1053,22 +1074,21 @@ const api = {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const q = new URL(req.url, 'http://x').searchParams;
     const day = /^\d{4}-\d\d-\d\d$/;
-    const from = day.test(q.get('from')) ? q.get('from') : new Date().toLocaleDateString('sv');
+    const from = day.test(q.get('from')) ? q.get('from') : bizToday();
     const to = day.test(q.get('to')) ? q.get('to') : from;
-    const where = ['date(created_at) BETWEEN ? AND ?'], args = [from, to];
+    const where = [`${bizDate('created_at')} BETWEEN ? AND ?`], args = [from, to];
     const kw = (q.get('q') || '').trim();
     if (kw) {
       where.push("(name LIKE ? ESCAPE '\\' OR phone = ?)"); // 번호는 암호화되어 있어 전체 번호로만 찾는다
       args.push(`%${kw.replace(/[\\%_]/g, '\\$&')}%`, ep(kw.replace(/\D/g, '')) || null);
     }
-    const lane = Number(q.get('lane'));
-    if (lane) { where.push("(',' || lanes || ',') LIKE ?"); args.push(`%,${lane},%`); }
+    const lane = (q.get('lane') || '').replace(/\D/g, '');
     const rows = db.prepare(`SELECT *, CASE WHEN assigned_at IS NOT NULL
       THEN CAST(ROUND((julianday(assigned_at) - julianday(created_at)) * 1440) AS INTEGER)
       WHEN status = 'CANCELED' AND finished_at IS NOT NULL
       THEN CAST(ROUND((julianday(finished_at) - julianday(created_at)) * 1440) AS INTEGER) END AS wait_min
       FROM entries WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 2000`).all(...args);
-    const view = rows.map((e) => ({
+    const view = rows.filter((e) => !lane || (e.lanes || '').match(/\d+/g)?.some((n) => String(Number(n)) === String(Number(lane)))).map((e) => ({
       id: e.id, createdAt: e.created_at, name: e.name, phone: maskPhone(dp(e.phone)), partySize: e.party_size, shoes: e.shoes ?? '', status: e.status,
       lanes: e.lanes || '', assignedAt: e.assigned_at || '', waitMin: e.wait_min ?? '', manual: e.user_id === null,
       memo: e.memo || '', cancelReason: e.cancel_reason || '',
@@ -1143,11 +1163,11 @@ const withdrawAccount = ({ userId = null, memberId = null }, doneBy) => {
   return { ok: true };
 };
 
-const LANES_ERROR = { error: `레인은 1~${LANES} 번호로 입력하세요. 예: 5,6` };
-const parseLanes = (text) => { // "6, 5" → "5,6". 잘못된 입력이면 null
-  const picked = [...new Set(String(text || '').split(',').map((s) => Number(s.trim())))];
-  if (!picked.length || picked.some((n) => !Number.isInteger(n) || n < 1 || n > LANES)) return null;
-  return picked.sort((a, c) => a - c).join(',');
+const LANES_ERROR = { error: '레인을 입력하세요. 예: 5, 5~6, 5.6' };
+// 레인은 단순 메모다: 5 / 5,6 / 5~6 / 5.6 처럼 적은 그대로 저장한다(공백만 정리, 최대 20자). 비어 있으면 null
+const parseLanes = (text) => {
+  const v = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 20);
+  return v || null;
 };
 
 async function handleAction(req, res, id, action) {
@@ -1171,7 +1191,8 @@ async function handleAction(req, res, id, action) {
     if (e.arrived_at) return json(res, 409, { error: '이미 도착 처리된 건입니다.' });
     if (e.status === 'EXPIRED' && db.prepare(`SELECT 1 FROM entries WHERE status IN ${ACTIVE} AND id<>? AND ((user_id IS NOT NULL AND user_id=?) OR (phone IS NOT NULL AND phone=?))`).get(id, e.user_id ?? -1, e.phone ?? ''))
       return json(res, 409, { error: '같은 손님의 다른 대기가 이미 있어 복구할 수 없습니다.' });
-    db.prepare("UPDATE entries SET status='WAITING', finished_at=NULL, arrived_at=datetime('now','localtime'), arrival_method='staff' WHERE id=?").run(id);
+    // 실제 대기 순서는 도착 확인한 순서다: 순서값(seq)을 맨 뒤로 보내 먼저 도착 확인한 팀이 앞에 오게 한다
+    db.prepare("UPDATE entries SET status='WAITING', finished_at=NULL, arrived_at=datetime('now','localtime'), arrival_method='staff', seq=(SELECT MAX(seq)+1 FROM entries) WHERE id=?").run(id);
     notify();
     return json(res, 200, { ok: true });
   }
@@ -1192,7 +1213,7 @@ async function handleAction(req, res, id, action) {
   }
   if ((action === 'yield' || action === 'tail') && e) { // 순서 조정: 양보(한 칸 뒤로), 맨뒤로
     if (e.status !== 'WAITING') return json(res, 409, { error: `${e.status} 상태에서는 불가합니다.` });
-    const next = db.prepare(`SELECT id, seq FROM entries WHERE status IN ${ACTIVE} AND seq > ? ORDER BY seq LIMIT 1`).get(e.seq);
+    const next = db.prepare(`SELECT id, seq FROM entries WHERE status IN ${ACTIVE} AND (arrived_at IS NULL) = ? AND seq > ? ORDER BY seq LIMIT 1`).get(e.arrived_at ? 0 : 1, e.seq); // 도착 확인한 팀끼리, 미도착끼리만 순서를 바꾼다
     if (!next) return json(res, 409, { error: '이미 맨 뒤입니다.' });
     if (action === 'yield') {
       db.prepare('UPDATE entries SET seq=? WHERE id=?').run(next.seq, id);
@@ -1514,7 +1535,7 @@ const purgeExpired = () => {
   return r;
 };
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');

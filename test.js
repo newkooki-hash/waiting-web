@@ -66,10 +66,16 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('GET', '/api/admin/intake')).body.url, server.oauth.BASE_URL); // QR은 토큰 없는 공개 주소
     assert.equal((await call('GET', '/arrive?t=x', null, { raw: true })).location, '/'); // 예전 도착 인증 QR 주소는 접수 화면으로
     assert.equal((await call('POST', '/api/admin/intake/rotate')).status, 404);
-    assert.equal((await call('POST', '/api/admin/intake/open', { open: false })).body.open, false);
+    assert.equal((await call('POST', '/api/admin/intake/open', { open: false })).status, 404); // 수동 접수 스위치는 없어졌다
+    const hm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const hours = (biz, wait = { same: true }) => call('POST', '/api/admin/intake/hours', { biz, wait });
+    assert.equal((await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) })).body.openNow, false); // 영업시간 밖 = 대기접수 불가
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'INTAKE_CLOSED');
     assert.equal((await call('GET', '/api/me')).body.intake.open, false);
-    assert.equal((await call('POST', '/api/admin/intake/open', { open: true })).body.open, true);
+    assert.equal((await call('GET', '/api/me')).body.intake.hours.business, `${hm(nowMin + 60)}~${hm(nowMin + 120)}`);
+    assert.equal((await hours({ h24: true })).body.openNow, true); // 24시간 영업
+    assert.equal((await call('GET', '/api/me')).body.intake.hours.business, '24시간');
     delete jar.admin; // 아래 관리자 섹션에서 다시 로그인
     // 관리자 세션은 DB에 저장되고 쓸 때마다 쿠키 만료(7일)가 연장된다
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
@@ -78,22 +84,35 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await fetch(base + '/api/admin/intake', { headers: { cookie: 'admin=bogus' } })).status, 401);
     delete jar.admin;
 
-    // --- 접수 가능 시간 ---
+    // --- 영업시간 / 대기접수 시간 ---
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
-    const sched = (enabled, start, end) => call('POST', '/api/admin/intake/schedule', { enabled, start, end });
-    const hm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
-    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-    assert.equal((await sched(true, '9:00', '18:00')).status, 400); // 형식 오류
-    assert.equal((await sched(true, '10:00', '10:00')).status, 400);
-    assert.equal((await sched(true, hm(nowMin + 60), hm(nowMin + 120))).body.openNow, false); // 시간대 밖
-    assert.equal((await call('GET', '/api/me')).body.intake.open, false);
+    assert.equal((await hours({ h24: false, start: '9:00', end: '18:00' })).status, 400); // 형식 오류
+    assert.equal((await hours({ h24: false, start: '10:00', end: '10:00' })).status, 400);
+    assert.equal((await hours({ h24: true }, { same: false, start: '10:00', end: '10:00' })).status, 400);
+    assert.equal((await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) })).body.openNow, false); // 시간대 밖
     assert.match((await call('GET', '/api/me')).body.intake.window, /^\d\d:\d\d~\d\d:\d\d$/);
     assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).body.code, 'INTAKE_CLOSED');
-    assert.equal((await sched(true, hm(nowMin - 60), hm(nowMin + 60))).body.openNow, true); // 시간대 안
-    // 시작 > 종료는 자정을 넘기는 시간대: 지금+1시간 시작 ~ 지금-1시간 종료이면 지금은 그 밖이다
-    assert.equal((await sched(true, hm(nowMin + 60), hm(nowMin - 60))).body.openNow, false);
-    assert.equal((await sched(true, hm(nowMin - 60), hm(nowMin - 120))).body.openNow, true); // 지금-1시간 시작 ~ 다음날 지금-2시간 종료
-    assert.equal((await sched(false)).body.openNow, true);
+    assert.equal((await call('GET', '/api/home')).status, 200); // 사이트 접속은 막지 않는다
+    assert.equal((await hours({ h24: false, start: hm(nowMin - 60), end: hm(nowMin + 60) })).body.openNow, true); // 시간대 안
+    assert.equal((await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin - 60) })).body.openNow, false); // 시작 > 종료는 자정을 넘기는 시간대
+    assert.equal((await hours({ h24: false, start: hm(nowMin - 60), end: hm(nowMin - 120) })).body.openNow, true);
+    // 대기접수 시간을 영업시간과 따로 정한다: 24시간 영업이어도 접수는 정해진 시간에만
+    const own = await hours({ h24: true }, { same: false, start: hm(nowMin + 60), end: hm(nowMin + 120) });
+    assert.deepEqual([own.body.openNow, own.body.hours.business, own.body.hours.intake === `${hm(nowMin + 60)}~${hm(nowMin + 120)}`], [false, '24시간', true]);
+    assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'INTAKE_CLOSED');
+    assert.equal((await hours({ h24: true }, { same: false, start: hm(nowMin - 60), end: hm(nowMin + 60) })).body.openNow, true);
+    // 영업일 기준 시각: 영업시간에서 자동 계산(자정을 넘기면 종료 시각), 24시간 영업이면 직접 설정
+    const dayStart = async () => (await call('GET', '/api/admin/business-day')).body.start;
+    await hours({ h24: false, start: '10:00', end: '02:00' });
+    assert.equal(await dayStart(), '02:00');
+    await hours({ h24: false, start: '10:00', end: '22:00' });
+    assert.equal(await dayStart(), '00:00');
+    assert.equal((await hours({ h24: true, dayStart: '13:00' })).status, 400); // 00:00~11:59 만
+    assert.equal((await hours({ h24: true, dayStart: '05:00' })).body.bizDay, '05:00');
+    assert.equal(await dayStart(), '05:00');
+    assert.equal((await call('POST', '/api/admin/business-day', { start: '05:00' })).status, 404); // 별도 설정은 없어졌다
+    assert.equal((await hours({ h24: true, dayStart: '00:00' })).body.bizDay, '00:00');
+    assert.equal((await hours({ h24: true })).body.openNow, true);
     delete jar.admin;
 
     // --- 휴대전화 인증 ---
@@ -186,9 +205,9 @@ mock.listen(0, () => server.listen(0, async () => {
     server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime') WHERE token=?").run(a.body.token); // 시각 복원
 
     assert.equal((await call('POST', `/api/admin/entries/${ida}/call`)).status, 404); // 호출 기능은 없다(카운터에서 직접 호출)
-    assert.equal((await call('POST', `/api/admin/entries/${ida}/assign`, { lanes: '19' })).status, 400);
-    assert.equal((await call('POST', `/api/admin/entries/${ida}/assign`, { lanes: '6,5' })).status, 200);
-    assert.equal((await call('GET', `/api/entries/${a.body.token}`)).body.lanes, '5,6');
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/assign`, { lanes: '  ' })).status, 400); // 비어 있으면 안 됨(그 외는 메모처럼 자유롭게)
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/assign`, { lanes: '5~6' })).status, 200);
+    assert.equal((await call('GET', `/api/entries/${a.body.token}`)).body.lanes, '5~6'); // 적은 그대로 저장
     const after = (await call('GET', '/api/admin/entries')).body.entries;
     assert.ok(after.every((e) => e.status === 'ASSIGNED' && e.assignedAt)); // 배정 완료 목록으로 이동
     assert.equal((await call('POST', `/api/entries/${a.body.token}/cancel`)).status, 409); // 이미 배정됨
@@ -266,9 +285,26 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/limits/reset', { entryId: firstExp })).status, 200); // 초기화
     assert.equal((await call('GET', '/api/me')).body.noshow.count, 0);
     assert.equal((await fetch(base + '/api/admin/limits')).status, 401);
-    const e4 = await call('POST', '/api/entries', { partySize: 1 }); // 이후 흐름을 위해 도착 확인된 대기 1건을 되살려 둔다
+    // --- 실제 대기(도착 확인 순) / 예비 대기(미도착) 순서 ---
+    const e4 = await call('POST', '/api/entries', { partySize: 1 }); // 먼저 접수했지만 아직 도착 확인 전
     assert.equal(e4.status, 201);
-    assert.equal((await call('POST', `/api/admin/entries/${(await call('GET', '/api/admin/entries')).body.entries.find((e) => e.status === 'WAITING').id}/arrive`)).status, 200);
+    const man = (await call('POST', '/api/admin/entries', { name: '순서수기', partySize: 1 })).body; // 수기 등록은 바로 도착 처리
+    const waiting = async () => (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status === 'WAITING');
+    const e4id = (await waiting()).find((e) => !e.arrivedAt).id;
+    let q = await waiting();
+    assert.deepEqual(q.map((e) => !!e.arrivedAt), [true, false]); // 도착 확인한 팀이 위, 미도착(예비)이 아래
+    assert.equal(q[0].name, '순서수기');
+    assert.equal((await view(e4.body.token)).position, 2); // 미도착 팀의 예상 순번은 도착한 팀 뒤
+    assert.equal((await call('POST', `/api/admin/entries/${e4id}/yield`)).status, 409); // 예비 대기 안에서는 맨 뒤
+    assert.equal((await call('POST', `/api/admin/entries/${e4id}/arrive`)).status, 200); // 도착 확인 → 실제 대기 맨 뒤
+    q = await waiting();
+    assert.deepEqual(q.map((e) => e.name), ['순서수기', q[1].name]);
+    assert.equal(q[1].id, e4id);
+    assert.equal((await view(e4.body.token)).position, 2);
+    assert.equal((await call('POST', `/api/admin/entries/${e4id}/yield`)).status, 409);
+    assert.equal((await call('POST', `/api/admin/entries/${q[0].id}/yield`)).status, 200); // 도착한 팀끼리는 양보 가능
+    assert.equal((await waiting())[0].id, e4id);
+    server.db.prepare('DELETE FROM entries WHERE id=?').run(q[0].id); // 이후 흐름을 위해 정리
     // --- 수기 등록·인원/메모 수정·취소 사유·이력 조회 ---
     const manual = (b) => call('POST', '/api/admin/entries', b);
     assert.equal((await manual({ name: '', partySize: 2 })).status, 400);
@@ -339,9 +375,9 @@ mock.listen(0, () => server.listen(0, async () => {
     // --- 배정 후 레인 변경 ---
     const assigned = async () => (await call('GET', '/api/admin/entries')).body.entries.find((e) => e.id === ida);
     const at = (await assigned()).assignedAt;
-    assert.equal((await call('POST', `/api/admin/entries/${ida}/relane`, { lanes: '19' })).status, 400);
-    assert.equal((await call('POST', `/api/admin/entries/${ida}/relane`, { lanes: '9, 3' })).status, 200);
-    assert.equal((await assigned()).lanes, '3,9');
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/relane`, { lanes: '' })).status, 400);
+    assert.equal((await call('POST', `/api/admin/entries/${ida}/relane`, { lanes: '9.3' })).status, 200);
+    assert.equal((await assigned()).lanes, '9.3');
     assert.equal((await assigned()).assignedAt, at); // 배정 시각은 유지
     assert.equal((await call('POST', `/api/admin/entries/${first.id}/relane`, { lanes: '1' })).status, 409); // 대기 건은 불가
     // --- 회원: 번호 인증 시 연결, CSV 가져오기, 마스킹, 원문 조회 ---
@@ -531,12 +567,12 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', `/api/tournaments/${tid}/apply`)).status, 201); // 취소 후 다시 신청
     assert.equal((await call('POST', `/api/tournaments/99999/apply`)).status, 404);
     assert.equal((await act(99999, 'confirm')).status, 404);
-    // 접수가 중지되어도 대회 신청 기간에는 QR 없이 번호 인증을 받을 수 있다
-    await call('POST', '/api/admin/intake/open', { open: false });
+    // 대기접수 시간이 아니어도 대회 신청 기간에는 번호 인증을 받을 수 있다
+    await call('POST', '/api/admin/intake/hours', { biz: { h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) }, wait: { same: true } });
     assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).body.code, 'INTAKE_CLOSED');
     assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).status, 400);
     assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).body.code, undefined);
-    await call('POST', '/api/admin/intake/open', { open: true });
+    await call('POST', '/api/admin/intake/hours', { biz: { h24: true }, wait: { same: true } });
     // --- 행사 일정 캘린더 ---
     const cal = (b) => call('POST', '/api/admin/calendar', b);
     assert.equal((await fetch(base + '/api/admin/calendar', { method: 'POST' })).status, 401);
@@ -604,7 +640,7 @@ mock.listen(0, () => server.listen(0, async () => {
     const homeNow = (await call('GET', '/api/home')).body;
     assert.match(homeNow.now, /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
     assert.deepEqual([homeNow.intake.open, typeof homeNow.waitingTeams], [true, 'number']);
-    assert.equal(homeNow.waitingTeams, (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status === 'WAITING').length);
+    assert.equal(homeNow.waitingTeams, (await call('GET', '/api/admin/entries')).body.entries.filter((e) => e.status === 'WAITING' && e.arrivedAt).length);
     // 접수중 > 접수 마감(대회일 전) > 접수 예정 > 일정 없음. 목록과 시각을 직접 넣어 계산만 확인한다
     const T = (id, start, end, event = '2999-12-30 10:00') => ({ id, name: '대회' + id, event_at: event, apply_start: start, apply_end: end, capacity: 10 });
     const NOW = '2026-11-08 12:00';

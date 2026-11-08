@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Image, Text } from '@mantine/core';
 import { Page, mount } from './common';
+import { InstallTip } from './InstallTip';
 import { useEvents } from '../lib/useEvents';
 import { tournamentButton, type HomeTournament } from '../lib/tournamentButton';
 
-interface Home { now: string; intake: { open: boolean; window: string | null }; waitingTeams: number; tournament: HomeTournament }
+interface Home { now: string; intake: { open: boolean; window: string | null; hours: { business: string; intake: string; intake24: boolean } }; waitingTeams: number; tournament: HomeTournament }
 
 const LABEL = { whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.35 } as const;
 
@@ -76,8 +77,14 @@ function App() {
             </div>
           </Button>
         </div>
+        {h && (
+          <Text ta="center" c="dimmed" fz="sm" role="note">
+            영업시간 <b>{h.intake.hours.business}</b>{h.intake.hours.business === h.intake.hours.intake ? ' · 대기접수도 같은 시간' : <> · 대기접수 <b>{h.intake.hours.intake}</b></>}
+          </Text>
+        )}
         {tip && <Alert color="grape" role="status">{tip}</Alert>}
       </div>
+      <InstallTip />
       <Text ta="center" c="dimmed" fz="xs" className="mt-6">대기 접수 후 15분 안에 카운터에서 도착 확인을 받아 주세요.</Text>
     </Page>
   );

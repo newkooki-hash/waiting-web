@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Anchor, Badge, Button, NativeSelect, Paper, Text, TextInput, Title } from '@mantine/core';
+import { Anchor, Badge, Button, NativeSelect, Paper, Text, Title } from '@mantine/core';
+import { LuCheck } from 'react-icons/lu';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
 import { confirmDialog } from '../lib/dialogs';
@@ -100,6 +101,38 @@ function App() {
   );
 }
 
+const NOW_YEAR = new Date().getFullYear();
+const YEARS = Array.from({ length: NOW_YEAR - 1929 }, (_, i) => String(NOW_YEAR - i)); // 올해부터 1930년까지
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/** 생년월일: 연·월·일을 각각 고르는 목록(폰에서는 돌려서 고르는 선택창이 열린다). 값은 'YYYY-MM-DD', 덜 골랐으면 '' */
+function BirthPicker({ value, onChange, description }: { value: string; onChange: (v: string) => void; description?: string }) {
+  const [y, m, d] = value ? value.split('-') : ['', '', ''];
+  const set = (ny: string, nm: string, nd: string) => {
+    const max = ny && nm ? new Date(Number(ny), Number(nm), 0).getDate() : 31;
+    if (nd && Number(nd) > max) nd = '';
+    onChange(ny && nm && nd ? `${ny}-${nm}-${nd}` : '');
+    setPart({ y: ny, m: nm, d: nd });
+  };
+  const [part, setPart] = useState({ y, m, d });
+  useEffect(() => { if (value) setPart({ y, m, d }); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  const max = part.y && part.m ? new Date(Number(part.y), Number(part.m), 0).getDate() : 31;
+  return (
+    <div>
+      <Text fz="sm" fw={500} className="mb-1">생년월일 <span className="text-[var(--mantine-color-red-6)]">*</span></Text>
+      <div className="flex gap-2">
+        <NativeSelect size="md" aria-label="출생 연도" className="flex-[1.4]" value={part.y} onChange={(e) => set(e.currentTarget.value, part.m, part.d)}
+          data={[{ value: '', label: '연도' }, ...YEARS.map((v) => ({ value: v, label: `${v}년` }))]} />
+        <NativeSelect size="md" aria-label="출생 월" className="flex-1" value={part.m} onChange={(e) => set(part.y, e.currentTarget.value, part.d)}
+          data={[{ value: '', label: '월' }, ...Array.from({ length: 12 }, (_, i) => ({ value: pad(i + 1), label: `${i + 1}월` }))]} />
+        <NativeSelect size="md" aria-label="출생 일" className="flex-1" value={part.d} onChange={(e) => set(part.y, part.m, e.currentTarget.value)}
+          data={[{ value: '', label: '일' }, ...Array.from({ length: max }, (_, i) => ({ value: pad(i + 1), label: `${i + 1}일` }))]} />
+      </div>
+      {description && <Text c="dimmed" fz="xs" className="mt-1">{description}</Text>}
+    </div>
+  );
+}
+
 function ProfileCard({ onFullMember, onSaved }: { onFullMember: (v: boolean) => void; onSaved: () => void }) {
   const [full, setFull] = useState(false);
   const [birth, setBirth] = useState('');
@@ -136,20 +169,18 @@ function ProfileCard({ onFullMember, onSaved }: { onFullMember: (v: boolean) => 
       <div className="flex flex-col gap-3">
         <Title order={4}>{full ? '내 정보 (정회원)' : '정회원 가입'}</Title>
         <Text c="dimmed" fz="sm">{hint}</Text>
-        <TextInput label="생년월일"
-      type="date"
-      size="md"
-      min="1900-01-01"
-      required
-      value={birth}
-      onChange={(e) => setBirth(e.currentTarget.value)}
-      description={birthYear ? `기존 정보: ${birthYear}년생. 정확한 생년월일을 입력해 주세요.` : undefined} />
-        <NativeSelect label="성별"
-      size="md"
-      required
-      value={gender}
-      onChange={(e) => setGender(e.currentTarget.value)}
-      data={[{ value: '', label: '선택' }, { value: 'm', label: '남' }, { value: 'f', label: '여' }]} />
+        <BirthPicker value={birth} onChange={setBirth} description={birthYear ? `기존 정보: ${birthYear}년생. 정확한 생년월일을 입력해 주세요.` : undefined} />
+        <div>
+          <Text fz="sm" fw={500} className="mb-1">성별 <span className="text-[var(--mantine-color-red-6)]">*</span></Text>
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="성별">
+            {[['m', '남'], ['f', '여']].map(([v, label]) => (
+              <Button key={v} size="md" h={52} radius="md" role="radio" aria-checked={gender === v}
+                variant={gender === v ? 'filled' : 'default'} onClick={() => setGender(v)}
+                leftSection={gender === v ? <LuCheck size={18} /> : undefined}>{label}</Button>
+            ))}
+          </div>
+
+        </div>
         <Button size="md" fullWidth onClick={save}>저장</Button>
         {err && <Text c="red" role="alert">{err}</Text>}
         <Text c="dimmed" fz="sm">허위로 입력한 경우 대회 참가가 제한될 수 있습니다. 입력한 내용이 바뀌면 이력이 기록됩니다.</Text>

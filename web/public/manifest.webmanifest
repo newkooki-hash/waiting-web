@@ -1,0 +1,16 @@
+{
+  "name": "오란다 볼링파크",
+  "short_name": "오란다볼링",
+  "description": "대기 접수 · 공지 및 일정 · 대회 신청",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#6B2FB3",
+  "theme_color": "#6B2FB3",
+  "lang": "ko",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
