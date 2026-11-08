@@ -253,10 +253,61 @@ const outsideWindow = () => { // 스위치는 켜져 있는데 시간대 밖일 
 // 만료 시각(finished_at)은 처리한 시각이 아니라 접수+N분이다. 직원의 도착 확인과 겹쳐도 arrived_at 조건 덕분에 도착이 이긴다.
 const ARRIVAL_LIMIT_MIN = Number(process.env.ARRIVAL_LIMIT_MIN) || 15;
 const expireUnarrived = () => {
-  const n = db.prepare(`UPDATE entries SET status='EXPIRED', finished_at=datetime(created_at, '+' || ? || ' minutes')
-    WHERE status='WAITING' AND arrived_at IS NULL AND created_at <= datetime('now','localtime','-' || ? || ' minutes')`).run(ARRIVAL_LIMIT_MIN, ARRIVAL_LIMIT_MIN).changes;
-  if (n) notify();
+  const due = `status='WAITING' AND arrived_at IS NULL AND created_at <= datetime('now','localtime','-' || ? || ' minutes')`;
+  const phones = db.prepare(`SELECT DISTINCT phone FROM entries WHERE ${due} AND phone IS NOT NULL`).all(ARRIVAL_LIMIT_MIN).map((r) => r.phone);
+  const n = db.prepare(`UPDATE entries SET status='EXPIRED', finished_at=datetime(created_at, '+' || ? || ' minutes') WHERE ${due}`).run(ARRIVAL_LIMIT_MIN, ARRIVAL_LIMIT_MIN).changes;
+  if (n) { phones.forEach(evaluateNoshow); notify(); }
   return n;
+};
+
+// 반복 미도착 접수 제한(PRD 4.4.1, 결정 25): 번호 기준으로 최근 NOSHOW_DAYS일 안 '도착 만료(EXPIRED)'가 NOSHOW_COUNT회가 되면
+// NOSHOW_BAN_DAYS일간 접수를 제한한다. 본인·직원 취소는 세지 않고, 직원이 도착 확인으로 복구한 건은 EXPIRED가 아니므로 자동 제외된다.
+// 제한이 끝나거나 직원이 해제·초기화하면 그 시각 이후의 만료만 센다. 모든 수치는 설정값이다.
+// 베타 기간(NOSHOW_ENFORCE 가 1이 아닐 때)에는 집계·표시만 하고 접수를 막지 않는다.
+const NOSHOW_COUNT = Number(process.env.NOSHOW_COUNT) || 3;
+const NOSHOW_DAYS = Number(process.env.NOSHOW_DAYS) || 30;
+const NOSHOW_BAN_DAYS = Number(process.env.NOSHOW_BAN_DAYS) || 7;
+let NOSHOW_ENFORCE = process.env.NOSHOW_ENFORCE === '1';
+try { db.exec('ALTER TABLE entries ADD COLUMN noshow_excluded INTEGER NOT NULL DEFAULT 0'); } catch {} // 오처리 제외(1이면 집계하지 않음)
+db.exec(`CREATE TABLE IF NOT EXISTS intake_limits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  released_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS noshow_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  phone TEXT NOT NULL,
+  action TEXT NOT NULL,
+  entry_id INTEGER,
+  limit_id INTEGER
+)`);
+const noshowLog = (phone, action, entryId = null, limitId = null) =>
+  db.prepare('INSERT INTO noshow_log (phone,action,entry_id,limit_id) VALUES (?,?,?,?)').run(phone, action, entryId, limitId);
+// 집계 시작 시각 이후의 만료만 센다: 최근 N일, 마지막 제한 종료·해제, 마지막 초기화 중 가장 늦은 시각
+const NOSHOW_FROM = `MAX(datetime('now','localtime','-${NOSHOW_DAYS} days'),
+  COALESCE((SELECT MAX(COALESCE(released_at, ends_at)) FROM intake_limits WHERE phone=@p AND COALESCE(released_at, ends_at) <= datetime('now','localtime')), ''),
+  COALESCE((SELECT MAX(at) FROM noshow_log WHERE phone=@p AND action='reset'), ''))`;
+const noshowEntries = (phone) => db.prepare(`SELECT id, finished_at FROM entries WHERE phone=@p AND status='EXPIRED' AND noshow_excluded=0
+  AND finished_at > ${NOSHOW_FROM} ORDER BY finished_at`).all({ p: phone }); // phone은 저장된(암호화된) 값
+const activeLimit = (phone) => db.prepare("SELECT * FROM intake_limits WHERE phone=? AND released_at IS NULL AND ends_at > datetime('now','localtime') ORDER BY id DESC").get(phone);
+const evaluateNoshow = (phone) => { // 횟수에 도달했고 진행 중인 제한이 없으면 제한을 만든다
+  if (!phone || activeLimit(phone)) return;
+  const list = noshowEntries(phone);
+  if (list.length < NOSHOW_COUNT) return;
+  const r = db.prepare("INSERT INTO intake_limits (phone,starts_at,ends_at) VALUES (?,?,datetime(?, '+' || ? || ' days'))").run(phone, list.at(-1).finished_at, list.at(-1).finished_at, NOSHOW_BAN_DAYS);
+  noshowLog(phone, 'limit', null, Number(r.lastInsertRowid));
+};
+// 손님에게 보여 줄 상태: 경고(마지막 한 번 남음)와 제한(시행 중일 때만 until)
+const noshowStatus = (phoneStored) => {
+  if (!phoneStored) return { count: 0, warn: false, until: null, left: NOSHOW_COUNT, banDays: NOSHOW_BAN_DAYS };
+  evaluateNoshow(phoneStored);
+  const count = noshowEntries(phoneStored).length;
+  const lim = NOSHOW_ENFORCE ? activeLimit(phoneStored) : null;
+  return { count, warn: !lim && count >= 1 && count < NOSHOW_COUNT, left: Math.max(0, NOSHOW_COUNT - count), until: lim ? lim.ends_at.slice(0, 10) : null, banDays: NOSHOW_BAN_DAYS };
 };
 
 // 인증번호 정책: 6자리, 5분 유효, 재발송 60초 간격, 계정당 24시간 5회, 오입력 5회
@@ -409,6 +460,7 @@ const api = {
       last: (u && db.prepare('SELECT party_size AS party, shoes FROM entries WHERE user_id=? ORDER BY id DESC LIMIT 1').get(u.id)) || null, // 지난 접수 인원·신발(다음 접수 기본값)
       intake: { open: intakeOpen(), window: outsideWindow() },
       arrivalLimitMin: ARRIVAL_LIMIT_MIN,
+      noshow: u ? noshowStatus(ep(u.phone)) : null, // 반복 미도착: 경고(warn)·제한 해제일(until)
       consent: u ? { missing: missingConsents(u.id), marketing: !!db.prepare('SELECT agreed FROM consents WHERE user_id=? AND type=? ORDER BY id DESC LIMIT 1').get(u.id, 'marketing')?.agreed } : null,
       providers: oauth.enabled().map((k) => ({ id: k, label: oauth.providers[k].label })),
     });
@@ -505,6 +557,11 @@ const api = {
     if (Number.isNaN(shoes)) return json(res, 400, shoesError(party));
     if (consentBlocked(res, user.id)) return;
     if (isBlacklisted(phone)) return json(res, 403, BLACKLISTED);
+    const ns = noshowStatus(ep(phone));
+    if (ns.until) { // 반복 미도착 임시 제한(시행 중일 때만)
+      const [, m, d] = ns.until.split('-').map(Number);
+      return json(res, 403, { error: `미도착 취소가 반복되어 ${m}월 ${d}일까지 접수할 수 없습니다. 매장에 문의해 주세요.`, code: 'NOSHOW_LIMITED', until: ns.until });
+    }
     const dup = db.prepare(`SELECT token FROM entries WHERE (user_id=? OR phone=?) AND status IN ${ACTIVE}`).get(user.id, ep(phone));
     if (dup) return json(res, 409, { error: '이미 접수된 대기가 있습니다.', token: dup.token });
     const token = crypto.randomBytes(12).toString('hex');
@@ -614,6 +671,47 @@ const api = {
   'POST /api/admin/blacklist/remove': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     db.prepare('DELETE FROM blacklist WHERE id=?').run(Number((await readBody(req)).id));
+    json(res, 200, { ok: true });
+  },
+  // 반복 미도착 접수 제한(M-30): 제한 대상, 최근 도착 만료 건(오처리 제외 표시), 이력
+  'GET /api/admin/limits': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    expireUnarrived();
+    const mask = (p) => maskPhone(dp(p));
+    const limits = db.prepare(`SELECT l.id, l.phone, l.starts_at AS startsAt, l.ends_at AS endsAt, l.released_at AS releasedAt,
+      (l.released_at IS NULL AND l.ends_at > datetime('now','localtime')) AS active FROM intake_limits l ORDER BY l.id DESC LIMIT 100`).all()
+      .map((l) => ({ ...l, active: !!l.active, phone: mask(l.phone) }));
+    const expired = db.prepare(`SELECT id, name, phone, finished_at AS expiredAt, noshow_excluded AS excluded FROM entries
+      WHERE status='EXPIRED' AND phone IS NOT NULL AND finished_at >= datetime('now','localtime','-${NOSHOW_DAYS} days') ORDER BY finished_at DESC LIMIT 200`).all()
+      .map((e) => ({ ...e, excluded: !!e.excluded, count: noshowEntries(e.phone).length, phone: mask(e.phone) }));
+    const log = db.prepare('SELECT at, phone, action, entry_id AS entryId FROM noshow_log ORDER BY id DESC LIMIT 50').all().map((l) => ({ ...l, phone: mask(l.phone) }));
+    json(res, 200, { enforce: NOSHOW_ENFORCE, rule: { count: NOSHOW_COUNT, days: NOSHOW_DAYS, banDays: NOSHOW_BAN_DAYS }, limits, expired, log });
+  },
+  'POST /api/admin/limits/release': async (req, res) => { // 제한 즉시 해제(해제하면 그 시각부터 다시 센다)
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const l = db.prepare('SELECT * FROM intake_limits WHERE id=?').get(Number((await readBody(req)).id));
+    if (!l) return json(res, 404, { error: 'not found' });
+    if (l.released_at) return json(res, 409, { error: '이미 해제된 제한입니다.' });
+    db.prepare("UPDATE intake_limits SET released_at=datetime('now','localtime') WHERE id=?").run(l.id);
+    noshowLog(l.phone, 'release', null, l.id);
+    json(res, 200, { ok: true });
+  },
+  'POST /api/admin/limits/reset': async (req, res) => { // 횟수 초기화(진행 중인 제한도 함께 해제)
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const e = db.prepare('SELECT phone FROM entries WHERE id=?').get(Number((await readBody(req)).entryId));
+    if (!e?.phone) return json(res, 404, { error: 'not found' });
+    db.prepare("UPDATE intake_limits SET released_at=datetime('now','localtime') WHERE phone=? AND released_at IS NULL AND ends_at > datetime('now','localtime')").run(e.phone);
+    noshowLog(e.phone, 'reset');
+    json(res, 200, { ok: true });
+  },
+  'POST /api/admin/limits/exclude': async (req, res) => { // 오처리 제외: 도착 만료 건을 집계에서 빼거나 되돌린다
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const e = db.prepare("SELECT id, phone FROM entries WHERE id=? AND status='EXPIRED'").get(Number(b.entryId));
+    if (!e?.phone) return json(res, 404, { error: 'not found' });
+    db.prepare('UPDATE entries SET noshow_excluded=? WHERE id=?').run(b.excluded ? 1 : 0, e.id);
+    noshowLog(e.phone, b.excluded ? 'exclude' : 'include', e.id);
+    evaluateNoshow(e.phone); // 되돌려서 횟수에 다시 도달하면 제한이 생긴다
     json(res, 200, { ok: true });
   },
   'GET /api/policy': async (req, res) => {
@@ -868,7 +966,7 @@ const api = {
     const b = await readBody(req);
     const reason = String(b.reason || '').trim().slice(0, 100);
     if (reason.length < 2) return json(res, 400, { error: '조회 사유를 입력하세요.' });
-    const table = { member: 'members', entry: 'entries', blacklist: 'blacklist', tournament: 'tournament_entries' }[b.type];
+    const table = { member: 'members', entry: 'entries', blacklist: 'blacklist', limit: 'intake_limits', tournament: 'tournament_entries' }[b.type];
     if (!table) return json(res, 400, { error: '조회 대상을 확인하세요.' });
     const id = Number(b.id);
     const row = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
@@ -1532,6 +1630,7 @@ if (require.main === module) {
 server.oauth = oauth;
 server.purgeExpired = purgeExpired;
 server.expireUnarrived = expireUnarrived;
+server.setNoshowEnforce = (on) => { const old = NOSHOW_ENFORCE; NOSHOW_ENFORCE = on; return old; }; // 테스트용
 server.homeTournament = homeTournament;
 server.encryptExistingPhones = encryptExistingPhones;
 server.ep = ep;

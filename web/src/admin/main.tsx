@@ -5,6 +5,7 @@ import { mountApp } from '../lib/app';
 import { post } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
 import { Blacklist } from './Blacklist';
+import { Limits } from './Limits';
 import { CalendarView } from './Calendar';
 import { History } from './History';
 import { Intake } from './Intake';
@@ -17,9 +18,9 @@ import { RevealProvider } from './ui';
 import { useSound } from './useSound';
 import type { Intake as IntakeInfo } from './types';
 
-const VIEWS = ['queue', 'history', 'stats', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'intake'] as const;
+const VIEWS = ['queue', 'history', 'stats', 'tournaments', 'calendar', 'notices', 'members', 'blacklist', 'limits', 'intake'] as const;
 type View = (typeof VIEWS)[number];
-const SETTINGS: [View, string][] = [['history', '이력 조회'], ['calendar', '행사 일정'], ['notices', '공지/이미지'], ['stats', '통계'], ['members', '회원 관리'], ['blacklist', '블랙리스트']];
+const SETTINGS: [View, string][] = [['history', '이력 조회'], ['calendar', '행사 일정'], ['notices', '공지/이미지'], ['stats', '통계'], ['members', '회원 관리'], ['blacklist', '블랙리스트'], ['limits', '접수 제한']];
 
 const readView = (): View => {
   const h = location.hash.slice(1) as View;
@@ -131,6 +132,7 @@ function Shell({ onLogout, onUnauthorized }: { onLogout: () => void; onUnauthori
         {view === 'stats' && <StatsView />}
         {view === 'members' && <Members />}
         {view === 'blacklist' && <Blacklist onChanged={() => setTick((t) => t + 1)} />}
+        {view === 'limits' && <Limits />}
         {view === 'intake' && <Intake intake={intake} reload={loadIntake} />}
       </div>
     </div>

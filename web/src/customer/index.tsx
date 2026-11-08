@@ -4,7 +4,7 @@ import { LuMinus, LuPlus } from 'react-icons/lu';
 import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
-import type { PublicEntry } from '../lib/types';
+import type { Me, PublicEntry } from '../lib/types';
 import { confirmDialog } from '../lib/dialogs';
 import { mmss, useCountdown } from '../lib/countdown';
 import { ALLOWED_RADIUS_M, formatDistance, useStoreDistance } from '../lib/geo';
@@ -108,7 +108,7 @@ function App() {
       {entry ? (
         <>
           {logged && <UserBar me={me} onDone={userDone} />}
-          <StatusCard entry={entry} limit={me.arrivalLimitMin} onCancel={cancel} onAgain={() => setEntry(null)} onExpire={refresh} />
+          <StatusCard entry={entry} limit={me.arrivalLimitMin} warn={me.noshow?.warn ? me.noshow : null} onCancel={cancel} onAgain={() => setEntry(null)} onExpire={refresh} />
         </>
       ) : (
         <>
@@ -140,6 +140,7 @@ function App() {
                 <Alert color="blue" role="note">
                   접수 후 <b>{me.arrivalLimitMin}분 안에 카운터에서 도착 확인</b>을 받으셔야 대기가 확정되며, 도착 확인을 받지 않으면 대기가 자동으로 만료됩니다. 접수 후 바로 매장으로 오셔서 직원에게 말씀해주세요.
                 </Alert>
+                {me.noshow?.warn && <Alert color="orange" role="alert">도착 확인을 받지 않아 대기가 만료된 적이 있습니다. {noshowText(me.noshow)}</Alert>}
                 <FarNotice limit={me.arrivalLimitMin} />
                 <Button type="submit" size="md" fullWidth>대기 접수</Button>
                 {err && <Text c="red" role="alert">{err}</Text>}
@@ -189,7 +190,10 @@ function ArrivalNotice({ entry: e, onExpire }: { entry: PublicEntry; onExpire: (
   );
 }
 
-function StatusCard({ entry: e, limit, onCancel, onAgain, onExpire }: { entry: PublicEntry; limit: number; onCancel: () => void; onAgain: () => void; onExpire: () => void }) {
+type Noshow = NonNullable<Me['noshow']>;
+const noshowText = (n: Noshow) => n.left === 1 ? `한 번 더 도착 확인을 받지 않으면 ${n.banDays}일간 접수가 제한됩니다.` : `도착 확인을 받지 않은 대기가 ${n.left}회 더 쌓이면 ${n.banDays}일간 접수가 제한됩니다.`;
+
+function StatusCard({ entry: e, limit, warn, onCancel, onAgain, onExpire }: { entry: PublicEntry; limit: number; warn: Noshow | null; onCancel: () => void; onAgain: () => void; onExpire: () => void }) {
   const who = `${e.name}님 · ${e.partySize}명` + (e.shoes === null ? '' : e.shoes ? ` · 신발 ${e.shoes}명` : ' · 신발 대여 안함');
   let main = '';
   let sub: ReactNode = '';
@@ -197,7 +201,7 @@ function StatusCard({ entry: e, limit, onCancel, onAgain, onExpire }: { entry: P
     main = `${e.position}번째`;
     sub = e.position === 1 ? '곧 직원이 부릅니다. 매장에서 기다려 주세요.' : `앞에 ${(e.position ?? 1) - 1}팀이 대기 중입니다.`;
   } else if (e.status === 'EXPIRED') {
-    main = '도착 만료'; sub = <>접수 후 {limit}분 안에 카운터에서 도착 확인을 받지 않아 대기가 만료되었습니다.<br /><Anchor component="button" type="button" onClick={onAgain}>다시 접수하기</Anchor></>;
+    main = '도착 만료'; sub = <>접수 후 {limit}분 안에 카운터에서 도착 확인을 받지 않아 대기가 만료되었습니다.<br />{warn && <><b>{noshowText(warn)}</b><br /></>}<Anchor component="button" type="button" onClick={onAgain}>다시 접수하기</Anchor></>;
   } else if (e.status === 'ASSIGNED') {
     main = `${e.lanes}번 레인`;
     sub = <>배정되었습니다. 즐거운 시간 되세요!<br /><Anchor component="button" type="button" onClick={onAgain}>새로 접수하기</Anchor></>;

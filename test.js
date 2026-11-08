@@ -219,6 +219,56 @@ mock.listen(0, () => server.listen(0, async () => {
     server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-30 minutes') WHERE id=?").run(e3id);
     assert.equal(server.expireUnarrived(), 0);
     server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime') WHERE id=?").run(e3id);
+    // --- 반복 미도착 접수 제한(베타: 집계만, 시행 전) ---
+    assert.equal((await call('POST', `/api/entries/${e3.body.token}/cancel`)).status, 200); // 본인 취소는 집계하지 않음
+    const expireOne = async () => { // 접수 → 15분 경과 → 만료
+      const r = await call('POST', '/api/entries', { partySize: 1 });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      server.db.prepare("UPDATE entries SET created_at=datetime('now','localtime','-16 minutes') WHERE token=?").run(r.body.token);
+      assert.equal((await view(r.body.token)).status, 'EXPIRED');
+    };
+    assert.equal((await call('GET', '/api/me')).body.noshow.count, 0); // 취소·복구 건은 세지 않음
+    await expireOne();
+    assert.equal((await call('GET', '/api/me')).body.noshow.warn, true); // 1회째부터 경고
+    await expireOne();
+    assert.deepEqual(await call('GET', '/api/me').then((r) => [r.body.noshow.count, r.body.noshow.warn]), [2, true]); // 2회째 경고
+    await expireOne(); // 3회: 제한이 만들어지지만 시행 전이라 접수는 막지 않는다
+    let lim = (await call('GET', '/api/admin/limits')).body;
+    assert.equal(lim.enforce, false);
+    assert.equal(lim.limits.length, 1);
+    assert.equal(lim.limits[0].active, true);
+    assert.equal(lim.expired.length, 3);
+    assert.equal((await call('GET', '/api/me')).body.noshow.until, null);
+    const okIntake = await call('POST', '/api/entries', { partySize: 1 });
+    assert.equal(okIntake.status, 201);
+    assert.equal((await call('POST', `/api/entries/${okIntake.body.token}/cancel`)).status, 200);
+    // 시행 모드: 접수 거절 + 해제 날짜 안내
+    const enforceOld = server.setNoshowEnforce?.(true);
+    if (server.setNoshowEnforce) {
+      const blocked = await call('POST', '/api/entries', { partySize: 1 });
+      assert.equal(blocked.status, 403);
+      assert.equal(blocked.body.code, 'NOSHOW_LIMITED');
+      assert.ok(blocked.body.until);
+      assert.equal((await call('POST', '/api/admin/limits/release', { id: lim.limits[0].id })).status, 200); // 해제하면 접수 가능
+      assert.equal((await call('POST', '/api/admin/limits/release', { id: lim.limits[0].id })).status, 409);
+      const again = await call('POST', '/api/entries', { partySize: 1 });
+      assert.equal(again.status, 201);
+      assert.equal((await call('POST', `/api/entries/${again.body.token}/cancel`)).status, 200);
+      server.setNoshowEnforce(enforceOld);
+    }
+    // 해제 뒤에는 다시 0부터 센다. 오처리 제외는 집계에서 빠지고 되돌리면 다시 센다
+    lim = (await call('GET', '/api/admin/limits')).body;
+    if (server.setNoshowEnforce) assert.equal((await call('GET', '/api/me')).body.noshow.count, 0);
+    const firstExp = lim.expired.at(-1).id;
+    assert.equal((await call('POST', '/api/admin/limits/exclude', { entryId: firstExp, excluded: true })).status, 200);
+    assert.equal((await call('GET', '/api/admin/limits')).body.expired.find((x) => x.id === firstExp).excluded, true);
+    assert.equal((await call('POST', '/api/admin/limits/exclude', { entryId: firstExp, excluded: false })).status, 200);
+    assert.equal((await call('POST', '/api/admin/limits/reset', { entryId: firstExp })).status, 200); // 초기화
+    assert.equal((await call('GET', '/api/me')).body.noshow.count, 0);
+    assert.equal((await fetch(base + '/api/admin/limits')).status, 401);
+    const e4 = await call('POST', '/api/entries', { partySize: 1 }); // 이후 흐름을 위해 도착 확인된 대기 1건을 되살려 둔다
+    assert.equal(e4.status, 201);
+    assert.equal((await call('POST', `/api/admin/entries/${(await call('GET', '/api/admin/entries')).body.entries.find((e) => e.status === 'WAITING').id}/arrive`)).status, 200);
     // --- 수기 등록·인원/메모 수정·취소 사유·이력 조회 ---
     const manual = (b) => call('POST', '/api/admin/entries', b);
     assert.equal((await manual({ name: '', partySize: 2 })).status, 400);
