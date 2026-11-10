@@ -37,7 +37,7 @@ function Cell({ children, sub, className = '' }: { children: ReactNode; sub?: Re
 
 const EMPTY = { name: '', phone: '', party: '', shoes: '', memo: '' };
 
-/** 미도착 배지: 접수 후 도착 제한(10분)까지 남은 시간을 센다. 0이 되면 잠시 뒤 다시 조회해 '도착 만료'로 옮긴다 */
+/** 미도착 배지: 접수 후 도착 제한(15분)까지 남은 시간을 센다. 0이 되면 잠시 뒤 다시 조회해 '도착 만료'로 옮긴다 */
 function Unarrived({ left, onZero }: { left: number | null; onZero: () => void }) {
   const s = useCountdown(left, () => setTimeout(onZero, 1200));
   return <Badge color="gray" variant="outline" size="sm">미도착{s !== null && ' ' + mmss(s)}</Badge>;
@@ -262,7 +262,7 @@ export function Queue({ tick, onUnauthorized }: { tick: number; onUnauthorized: 
         </div>
       </Paper>
 
-      {/* 도착 만료: 접수 후 10분 안에 도착 인증을 하지 않은 오늘의 건. 매장에 와 있으면 도착 확인으로 되살린다 */}
+      {/* 도착 만료: 접수 후 15분 안에 도착 확인을 하지 않은 오늘의 건. 매장에 와 있으면 도착 확인으로 되살린다 */}
       {expired.length > 0 && (
         <Paper withBorder radius="lg" className="mt-4 overflow-hidden">
           <div className="px-5 py-3 bg-[var(--mantine-color-default-hover)]"><Text fw={700}>도착 만료 {expired.length}팀 <Text span c="dimmed" fz="sm">· 최근 12시간, 접수 후 제한 시간 안에 도착 확인을 받지 못한 건</Text></Text></div>

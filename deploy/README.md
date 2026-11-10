@@ -45,6 +45,7 @@ sudo nano /etc/waiting-web.env
 | `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET` | 카카오 앱 키 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 네이버 앱 키 |
 | `SOLAPI_API_KEY`, `SOLAPI_API_SECRET`, `SOLAPI_SENDER` | 솔라피 |
+| `NHN_SMS_APPKEY`, `NHN_SMS_SECRET`, `NHN_SMS_SENDER` | NHN Cloud SMS (설정되면 솔라피보다 우선). `SMS_PROVIDER=nhn|solapi`로 강제 지정 |
 
 저장 후 시작한다.
 ```bash
