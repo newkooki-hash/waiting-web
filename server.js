@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const oauth = require('./oauth');
 const sms = require('./sms');
+const holidays = require('./holidays');
 
 const PORT = process.env.PORT || 3000;
 // 관리자는 운영자 공용 계정 하나(아이디+비밀번호)를 함께 쓴다. 권한 구분 없음
@@ -231,31 +232,81 @@ const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').g
 const setSetting = (k, v) => db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
 // 접수 가능 시간대: 시작 > 종료이면 자정을 넘기는 시간대(예: 18:00~02:00)로 본다. 서버 시간대 기준
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
-// 영업일 기준: 이 시각 이전에 생긴 접수·배정은 전날 영업일로 본다. 예) 05:00 → 새벽 00:00~04:59는 전날. QR 관리의 영업시간에서 정해진다
-// 24시간 영업이면 설정값(기본 00:00), 아니면 영업시간에서 자동으로 정한다: 자정을 넘기는 영업(예: 10:00~02:00)은 종료 시각, 그 외에는 00:00
+// 영업일 기준: 이 시각 이전에 생긴 접수·배정은 전날 영업일로 본다. 예) 05:00 → 새벽 00:00~04:59는 전날. 요일별 영업시간과 별개로 직접 정한다(00:00~11:59)
 const bizDayStored = () => { const v = getSetting('business_day_start'); return HHMM.test(v) ? v : '00:00'; };
-const bizStart = () => { const h = bizHours(); return h.h24 ? bizDayStored() : h.start > h.end ? h.end : '00:00'; };
+const bizStart = bizDayStored;
 const bizMinutes = () => { const [h, m] = bizStart().split(':').map(Number); return h * 60 + m; };
 const bizToday = () => new Date(Date.now() - bizMinutes() * 60000).toLocaleDateString('sv'); // 서버 시각 기준 오늘 영업일
 const bizDate = (col) => `date(${col}, '-${bizMinutes()} minutes')`; // 칼럼 시각이 속한 영업일(SQL)
 const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
-const inWindow = (min, start, end) => {
-  const s = toMin(start), e = toMin(end);
-  return s <= e ? min >= s && min < e : min >= s || min < e;
+
+// 영업시간·대기접수 시간: 요일별 7개 + 공휴일 1개(인덱스 0=일 … 6=토, 7=공휴일). 특정 날짜는 예외 날짜가 우선한다(휴무·단축 영업).
+// 한 줄 규칙: { biz: {closed, h24, start, end} }. 종료가 시작보다 빠르면 다음 날 새벽까지 이어지는 시간이다.
+// 대기접수 시간은 따로 정하지 않고 '영업 시작 M분 전 ~ 영업 종료 N분 전'이다(M·N은 전체 공통 설정 wait_open_before_min·wait_close_before_min)
+const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
+const minSetting = (k) => { const n = Number(getSetting(k)); return Number.isInteger(n) && n >= 0 && n <= 180 ? n : 0; };
+const waitBefore = () => minSetting('wait_close_before_min'); // 영업 종료 N분 전에 접수 마감
+const waitOpen = () => minSetting('wait_open_before_min'); // 영업 시작 M분 전부터 접수(미리 줄서기)
+const ruleError = (r, before = waitBefore(), open = waitOpen()) => {
+  if (!r || typeof r !== 'object' || !r.biz) return '시간 형식이 올바르지 않습니다.';
+  if (r.biz.closed || r.biz.h24) return null;
+  if (!HHMM.test(r.biz.start) || !HHMM.test(r.biz.end) || r.biz.start === r.biz.end) return '영업시간의 시작·종료를 HH:MM 형식으로, 서로 다르게 입력하세요. 24시간 영업이면 24시간을 선택하세요.';
+  if (before >= (toMin(r.biz.end) - toMin(r.biz.start) + 1440) % 1440 + open) return `영업시간이 대기접수 마감(${before}분 전) 설정보다 짧습니다.`;
+  return null;
 };
-// 영업시간: 24시간 영업이거나 시작~종료(종료가 시작보다 빠르면 자정을 넘김). 설정이 없던 매장은 24시간으로 본다
-if (getSetting('biz_h24') === undefined) { // 예전 '접수 가능 시간' 설정이 있으면 영업시간으로 옮긴다
-  if (getSetting('intake_schedule') === '1') { setSetting('biz_h24', '0'); setSetting('biz_start', getSetting('intake_start') || '10:00'); setSetting('biz_end', getSetting('intake_end') || '22:00'); }
-  else setSetting('biz_h24', '1');
+const cleanRule = (r) => ({ biz: { closed: !!r.biz.closed, h24: !!r.biz.h24, start: HHMM.test(r.biz.start) ? r.biz.start : '10:00', end: HHMM.test(r.biz.end) ? r.biz.end : '22:00' } });
+const defaultRule = () => ({ biz: { closed: false, h24: true, start: '10:00', end: '22:00' } });
+{ // 처음 한 번: 예전 단일 설정(biz_*·wait_*)을 모든 요일·공휴일로 옮긴다
+  if (getSetting('biz_h24') === undefined) { // 더 예전의 '접수 가능 시간' 설정이 있으면 영업시간으로 옮긴다
+    if (getSetting('intake_schedule') === '1') { setSetting('biz_h24', '0'); setSetting('biz_start', getSetting('intake_start') || '10:00'); setSetting('biz_end', getSetting('intake_end') || '22:00'); }
+    else setSetting('biz_h24', '1');
+  }
+  if (getSetting('schedule') === undefined) {
+    const biz = { closed: false, h24: getSetting('biz_h24') !== '0', start: getSetting('biz_start') || '10:00', end: getSetting('biz_end') || '22:00' };
+    const wait = { same: getSetting('wait_same') !== '0', start: getSetting('wait_start') || '10:00', end: getSetting('wait_end') || '22:00' };
+    if (!biz.h24 && !wait.same) { const d = (toMin(biz.end) - toMin(wait.end) + 1440) % 1440; if (d > 0 && d <= 180) setSetting('wait_close_before_min', d); } // 예전 별도 접수 종료 → 영업 종료 N분 전
+    // 예전에는 자정을 넘기는 영업이면 영업일 기준이 종료 시각으로 자동 정해졌다. 그 값을 직접 설정값으로 옮긴다
+    if (!biz.h24 && biz.start > biz.end && getSetting('business_day_start') === undefined && biz.end < '12:00') setSetting('business_day_start', biz.end);
+    setSetting('schedule', JSON.stringify(Array.from({ length: 8 }, () => ({ biz: { ...biz } }))));
+  }
 }
-const bizHours = () => ({ h24: getSetting('biz_h24') !== '0', start: getSetting('biz_start') || '10:00', end: getSetting('biz_end') || '22:00' });
-// 대기접수 시간: 기본은 영업시간과 같고, 직접 정하면 그 시간에만 대기접수를 받는다. 사이트 접속·공지·대회 신청은 시간과 상관없이 열려 있다
-const waitSetting = () => ({ same: getSetting('wait_same') !== '0', start: getSetting('wait_start') || '10:00', end: getSetting('wait_end') || '22:00' });
-const intakeHours = () => { const w = waitSetting(); return w.same ? bizHours() : { h24: false, start: w.start, end: w.end }; };
-const hoursText = (h) => (h.h24 ? '24시간' : `${h.start}~${h.end}`);
-const intakeOpen = (now = new Date()) => { const h = intakeHours(); return h.h24 || inWindow(now.getHours() * 60 + now.getMinutes(), h.start, h.end); };
-const outsideWindow = () => (intakeOpen() ? null : hoursText(intakeHours())); // 시간 밖일 때 안내할 대기접수 시간
-const hoursInfo = () => ({ business: hoursText(bizHours()), intake: hoursText(intakeHours()), intake24: intakeHours().h24 }); // 손님 화면 안내용
+db.exec("CREATE TABLE IF NOT EXISTS hours_exceptions (date TEXT PRIMARY KEY, rule TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)");
+const getSchedule = () => { try { const a = JSON.parse(getSetting('schedule')); if (Array.isArray(a) && a.length === 8) return a; } catch {} return Array.from({ length: 8 }, defaultRule); };
+const dateStr = (d) => d.toLocaleDateString('sv');
+const addDay = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+// 그 날짜에 적용되는 규칙: 예외 날짜 > 공휴일 > 요일
+const ruleFor = (d) => {
+  const date = dateStr(d);
+  const ex = db.prepare('SELECT rule, note FROM hours_exceptions WHERE date=?').get(date);
+  if (ex) { try { return { ...JSON.parse(ex.rule), source: 'exception', label: '예외 날짜', note: ex.note }; } catch {} }
+  const hn = holidays.holidayName(date);
+  if (hn) return { ...getSchedule()[7], source: 'holiday', label: hn, note: '' };
+  return { ...getSchedule()[d.getDay()], source: 'weekday', label: DAY_NAMES[d.getDay()] + '요일', note: '' };
+};
+const bizWindow = (r) => (r.biz.closed ? null : r.biz.h24 ? { h24: true } : { h24: false, start: r.biz.start, end: r.biz.end });
+const hhmm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+// 대기접수 창: 규칙이 시작되는 날 0시 기준 분 단위 [s, e). 1440 이상이면 다음 날로 넘어간 부분이다
+const waitWindow = (r) => {
+  const w = bizWindow(r);
+  if (!w || w.h24) return w;
+  const s0 = toMin(w.start), e0 = toMin(w.end) + (toMin(w.end) <= s0 ? 1440 : 0);
+  return { h24: false, s: s0 - waitOpen(), e: e0 - waitBefore() }; // s가 음수면 전날 밤부터 접수
+};
+// 지금(min=자정 이후 분)이 그 날 규칙의 창에 드는가. 어제 시작한 창이 오늘 새벽까지 이어지면 min+1440으로 본다
+const inToday = (w, min) => !!w && (w.h24 || (min >= w.s && min < w.e));
+const inSpill = (w, min) => !!w && !w.h24 && min + 1440 >= w.s && min + 1440 < w.e;
+const intakeOpen = (now = new Date()) => {
+  const min = now.getHours() * 60 + now.getMinutes();
+  return inToday(waitWindow(ruleFor(now)), min) || inSpill(waitWindow(ruleFor(addDay(now, -1))), min)
+    || inToday(waitWindow(ruleFor(addDay(now, 1))), min - 1440); // 내일 영업의 사전 접수(자정 전부터 미리 받는 경우)
+};
+const hoursText = (w) => (!w ? '휴무' : w.h24 ? '24시간' : w.s !== undefined ? `${hhmm(w.s)}~${hhmm(w.e)}` : `${w.start}~${w.end}`);
+const outsideWindow = () => (intakeOpen() ? null : hoursText(waitWindow(ruleFor(new Date())))); // 시간 밖일 때 안내할 대기접수 시간(휴무면 '휴무')
+// 손님 화면 안내용: 오늘 적용되는 시간과 그 사유(공휴일 이름·예외 날짜 메모)
+const hoursInfo = () => {
+  const r = ruleFor(new Date()), w = waitWindow(r);
+  return { business: hoursText(bizWindow(r)), intake: hoursText(w), intake24: !!w?.h24, closeBefore: waitBefore(), openBefore: waitOpen(), memo: getSetting('hours_memo') || '', closed: !!r.biz.closed, label: r.label, note: r.note || '' };
+};
 // 도착 확인(PRD 4.3): 접수 후 ARRIVAL_LIMIT_MIN분 안에 카운터에서 직원이 도착 확인을 하지 않으면 '도착 만료(EXPIRED)' 상태로 바뀐다.
 // 취소(CANCELED)와 다른 상태이고, 타이머 없이 대기 목록·조회 요청 때마다 접수 시각과 비교해 바꾼다.
 // 만료 시각(finished_at)은 처리한 시각이 아니라 접수+N분이다. 직원의 도착 확인과 겹쳐도 arrived_at 조건 덕분에 도착이 이긴다.
@@ -406,11 +457,22 @@ const clientIp = (req) => { // Caddy 뒤에서는 X-Forwarded-For의 클라이�
   const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
   return ['::1', '127.0.0.1', '::ffff:127.0.0.1'].includes(remote) && fwd ? fwd : remote;
 };
+// 관리자 QR 관리 화면 응답: 요일별 설정, 앞으로의 예외 날짜, 앞으로의 공휴일, 오늘 적용 중인 시간
+const intakeView = () => {
+  const today = dateStr(new Date()), r = ruleFor(new Date());
+  return {
+    openNow: intakeOpen(), hours: hoursInfo(), dayStart: bizDayStored(), bizDay: bizStart(), url: oauth.BASE_URL,
+    waitBefore: waitBefore(), waitOpen: waitOpen(),
+    schedule: getSchedule(),
+    exceptions: db.prepare('SELECT date, rule, note FROM hours_exceptions WHERE date >= ? ORDER BY date').all(today).map((x) => ({ date: x.date, note: x.note, ...JSON.parse(x.rule) })),
+    holidays: holidays.upcomingHolidays(today, 400),
+  };
+};
 // 접수(SMS 발송·대기 등록) 가능 여부. 접수는 공개이며 QR은 공개 접수 주소를 여는 용도다. 불가하면 응답을 보내고 true를 돌려준다.
 const intakeBlocked = (req, res) => {
   if (!intakeOpen()) {
     const w = outsideWindow();
-    return json(res, 403, { error: w ? `접수 가능 시간은 ${w}입니다.` : '지금은 접수 중이 아닙니다.', code: 'INTAKE_CLOSED' }), true;
+    return json(res, 403, { error: w === '휴무' ? '오늘은 휴무일이라 대기접수를 받지 않습니다.' : w ? `접수 가능 시간은 ${w}입니다.` : '지금은 접수 중이 아닙니다.', code: 'INTAKE_CLOSED' }), true;
   }
   return false;
 };
@@ -604,25 +666,60 @@ const api = {
   },
   'GET /api/admin/intake': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
-    json(res, 200, { openNow: intakeOpen(), biz: bizHours(), wait: waitSetting(), hours: hoursInfo(), dayStart: bizDayStored(), bizDay: bizStart(), url: oauth.BASE_URL });
+    json(res, 200, intakeView());
   },
-  // 영업시간(24시간 가능)과 대기접수 시간(영업시간과 같게/직접 설정)을 한 번에 저장한다
-  'POST /api/admin/intake/hours': async (req, res) => {
+  // 요일별(일~토 7개 + 공휴일) 영업시간, 대기접수 마감(영업 종료 N분 전), 영업일 기준 시각을 저장한다
+  'POST /api/admin/intake/schedule': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
     const b = await readBody(req);
-    const biz = b.biz || {}, wait = b.wait || {};
-    const bad = (x) => !HHMM.test(x.start) || !HHMM.test(x.end) || x.start === x.end;
-    if (!biz.h24 && bad(biz)) return json(res, 400, { error: '영업시간의 시작·종료를 HH:MM 형식으로, 서로 다르게 입력하세요. 24시간 영업이면 24시간을 선택하세요.' });
-    if (!wait.same && bad(wait)) return json(res, 400, { error: '대기접수 시간의 시작·종료를 HH:MM 형식으로, 서로 다르게 입력하세요.' });
-    if (biz.h24 && biz.dayStart !== undefined && (!HHMM.test(biz.dayStart) || biz.dayStart >= '12:00'))
+    if (!Array.isArray(b.days) || b.days.length !== 8) return json(res, 400, { error: '요일별 시간이 올바르지 않습니다.' });
+    const before = b.waitBefore === undefined ? waitBefore() : b.waitBefore;
+    const open = b.waitOpen === undefined ? waitOpen() : b.waitOpen;
+    if (!Number.isInteger(before) || before < 0 || before > 180) return json(res, 400, { error: '대기접수 마감은 영업 종료 0~180분 전으로 입력하세요.' });
+    if (!Number.isInteger(open) || open < 0 || open > 180) return json(res, 400, { error: '대기접수 시작은 영업 시작 0~180분 전으로 입력하세요.' });
+    for (let i = 0; i < 8; i++) {
+      const err = ruleError(b.days[i], before, open);
+      if (err) return json(res, 400, { error: `${i === 7 ? '공휴일' : DAY_NAMES[i] + '요일'}: ${err}` });
+    }
+    if (b.dayStart !== undefined && (!HHMM.test(b.dayStart) || b.dayStart >= '12:00'))
       return json(res, 400, { error: '영업일이 바뀌는 시각을 00:00~11:59 사이로 입력하세요.' });
-    if (biz.h24 && biz.dayStart !== undefined) setSetting('business_day_start', biz.dayStart);
-    setSetting('biz_h24', biz.h24 ? '1' : '0');
-    if (!biz.h24) { setSetting('biz_start', biz.start); setSetting('biz_end', biz.end); }
-    setSetting('wait_same', wait.same ? '1' : '0');
-    if (!wait.same) { setSetting('wait_start', wait.start); setSetting('wait_end', wait.end); }
+    if (b.dayStart !== undefined) setSetting('business_day_start', b.dayStart);
+    setSetting('wait_close_before_min', before);
+    setSetting('wait_open_before_min', open);
+    setSetting('schedule', JSON.stringify(b.days.map(cleanRule)));
     notify();
-    json(res, 200, { openNow: intakeOpen(), biz: bizHours(), wait: waitSetting(), hours: hoursInfo(), dayStart: bizDayStored(), bizDay: bizStart() });
+    json(res, 200, intakeView());
+  },
+  // 손님 화면에 보이는 영업 안내 메모(예: 공휴일 전날은 04시까지 영업). 줄바꿈마다 한 항목, 비우면 표시하지 않는다
+  'POST /api/admin/intake/memo': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    const memo = String(b.memo ?? '').replace(/\r\n/g, '\n').trim();
+    if (memo.length > 500) return json(res, 400, { error: '메모는 500자 이내로 입력하세요.' });
+    setSetting('hours_memo', memo);
+    notify();
+    json(res, 200, intakeView());
+  },
+  // 특정 날짜의 예외(임시 휴무·단축 영업). 같은 날짜를 다시 저장하면 덮어쓴다
+  'POST /api/admin/intake/exception': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '') || Number.isNaN(Date.parse(b.date))) return json(res, 400, { error: '날짜를 입력하세요.' });
+    const rule = { biz: { ...(b.biz || {}), closed: !!b.biz?.closed } };
+    const err = ruleError(rule);
+    if (err) return json(res, 400, { error: err });
+    const note = String(b.note || '').trim().slice(0, 60);
+    db.prepare('INSERT INTO hours_exceptions (date,rule,note,updated_at) VALUES (?,?,?,?) ON CONFLICT(date) DO UPDATE SET rule=excluded.rule, note=excluded.note, updated_at=excluded.updated_at')
+      .run(b.date, JSON.stringify(cleanRule(rule)), note, Date.now());
+    notify();
+    json(res, 200, intakeView());
+  },
+  'POST /api/admin/intake/exception/delete': async (req, res) => {
+    if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
+    const b = await readBody(req);
+    db.prepare('DELETE FROM hours_exceptions WHERE date=?').run(String(b.date || ''));
+    notify();
+    json(res, 200, intakeView());
   },
   'GET /api/admin/entries': async (req, res) => {
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });

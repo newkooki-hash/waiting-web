@@ -23,6 +23,18 @@ export function Page({ title, children }: { title?: string; children: ReactNode 
 }
 
 /** 공지사항·행사 일정 화면 위의 탭(링크) */
+/** 관리자가 적은 영업 안내 메모. 줄마다 한 항목으로 보여 준다(HTML 아님, 글자 그대로) */
+export function MemoNotice({ text }: { text: string }) {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  return (
+    <Paper withBorder radius="md" p="sm" role="note" className="bg-[var(--mantine-color-yellow-light)]">
+      <Text fz="sm" fw={700} className="mb-1">안내</Text>
+      <ul className="m-0 pl-5 text-sm leading-relaxed break-keep">{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>
+    </Paper>
+  );
+}
+
 export function InfoTabs({ active }: { active: 'notice' | 'calendar' }) {
   return (
     <div className="flex gap-2 mb-4">

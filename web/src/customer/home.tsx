@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Image, Text } from '@mantine/core';
-import { Page, mount } from './common';
+import { MemoNotice, Page, mount } from './common';
 import { InstallTip } from './InstallTip';
 import { useEvents } from '../lib/useEvents';
 import { tournamentButton, type HomeTournament } from '../lib/tournamentButton';
 
-interface Home { now: string; intake: { open: boolean; window: string | null; hours: { business: string; intake: string; intake24: boolean } }; waitingTeams: number; tournament: HomeTournament }
+interface Home { now: string; intake: { open: boolean; window: string | null; hours: { business: string; intake: string; intake24: boolean; memo: string; closed: boolean; label: string; note: string } }; waitingTeams: number; tournament: HomeTournament }
 
 const LABEL = { whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.35 } as const;
 
@@ -79,9 +79,12 @@ function App() {
         </div>
         {h && (
           <Text ta="center" c="dimmed" fz="sm" role="note">
-            영업시간 <b>{h.intake.hours.business}</b>{h.intake.hours.business === h.intake.hours.intake ? ' · 대기접수도 같은 시간' : <> · 대기접수 <b>{h.intake.hours.intake}</b></>}
+            {h.intake.hours.closed
+              ? <>오늘은 <b>휴무</b>입니다{h.intake.hours.note ? ` (${h.intake.hours.note})` : ''}</>
+              : <>오늘({h.intake.hours.label}) 영업시간 <b>{h.intake.hours.business}</b>{h.intake.hours.business === h.intake.hours.intake ? ' · 대기접수도 같은 시간' : <> · 대기접수 <b>{h.intake.hours.intake}</b></>}{h.intake.hours.note ? ` · ${h.intake.hours.note}` : ''}</>}
           </Text>
         )}
+        {h?.intake.hours.memo && <MemoNotice text={h.intake.hours.memo} />}
         {tip && <Alert color="grape" role="status">{tip}</Alert>}
       </div>
       <InstallTip />

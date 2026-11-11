@@ -69,7 +69,8 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/intake/open', { open: false })).status, 404); // 수동 접수 스위치는 없어졌다
     const hm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-    const hours = (biz, wait = { same: true }) => call('POST', '/api/admin/intake/hours', { biz, wait });
+    // 모든 요일·공휴일에 같은 영업시간을 저장하는 도우미(dayStart·waitBefore는 선택)
+    const hours = ({ dayStart, ...biz }, waitBefore, waitOpen) => call('POST', '/api/admin/intake/schedule', { days: Array.from({ length: 8 }, () => ({ biz: { closed: false, ...biz } })), ...(dayStart !== undefined ? { dayStart } : {}), ...(waitBefore !== undefined ? { waitBefore } : {}), ...(waitOpen !== undefined ? { waitOpen } : {}) });
     assert.equal((await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) })).body.openNow, false); // 영업시간 밖 = 대기접수 불가
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'INTAKE_CLOSED');
     assert.equal((await call('GET', '/api/me')).body.intake.open, false);
@@ -88,7 +89,9 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', '/api/admin/login', { id: 'admin', password: 'pw' })).status, 200);
     assert.equal((await hours({ h24: false, start: '9:00', end: '18:00' })).status, 400); // 형식 오류
     assert.equal((await hours({ h24: false, start: '10:00', end: '10:00' })).status, 400);
-    assert.equal((await hours({ h24: true }, { same: false, start: '10:00', end: '10:00' })).status, 400);
+    assert.equal((await hours({ h24: false, start: '10:00', end: '12:00' }, 120)).status, 400); // 접수 마감이 영업시간보다 길면 거절
+    assert.equal((await hours({ h24: false, start: '10:00', end: '12:00' }, 181)).status, 400);
+    await hours({ h24: true }, 0);
     assert.equal((await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) })).body.openNow, false); // 시간대 밖
     assert.match((await call('GET', '/api/me')).body.intake.window, /^\d\d:\d\d~\d\d:\d\d$/);
     assert.equal((await call('POST', '/api/phone/send', { phone: '01011112222' })).body.code, 'INTAKE_CLOSED');
@@ -96,22 +99,73 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await hours({ h24: false, start: hm(nowMin - 60), end: hm(nowMin + 60) })).body.openNow, true); // 시간대 안
     assert.equal((await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin - 60) })).body.openNow, false); // 시작 > 종료는 자정을 넘기는 시간대
     assert.equal((await hours({ h24: false, start: hm(nowMin - 60), end: hm(nowMin - 120) })).body.openNow, true);
-    // 대기접수 시간을 영업시간과 따로 정한다: 24시간 영업이어도 접수는 정해진 시간에만
-    const own = await hours({ h24: true }, { same: false, start: hm(nowMin + 60), end: hm(nowMin + 120) });
-    assert.deepEqual([own.body.openNow, own.body.hours.business, own.body.hours.intake === `${hm(nowMin + 60)}~${hm(nowMin + 120)}`], [false, '24시간', true]);
+    // 대기접수는 영업 종료 N분 전까지: 영업 중이어도 마감 시각이 지나면 접수 불가
+    const early = await hours({ h24: false, start: hm(nowMin - 120), end: hm(nowMin + 30) }, 60);
+    assert.deepEqual([early.status, early.body.openNow, early.body.hours.business === `${hm(nowMin - 120)}~${hm(nowMin + 30)}`, early.body.hours.intake === `${hm(nowMin - 120)}~${hm(nowMin - 30)}`, early.body.hours.closeBefore], [200, false, true, true, 60]);
     assert.equal((await call('POST', '/api/entries', { partySize: 2 })).body.code, 'INTAKE_CLOSED');
-    assert.equal((await hours({ h24: true }, { same: false, start: hm(nowMin - 60), end: hm(nowMin + 60) })).body.openNow, true);
-    // 영업일 기준 시각: 영업시간에서 자동 계산(자정을 넘기면 종료 시각), 24시간 영업이면 직접 설정
+    assert.equal((await hours({ h24: false, start: hm(nowMin - 120), end: hm(nowMin + 90) }, 60)).body.openNow, true); // 마감 30분 전이라 접수 가능
+    await hours({ h24: true }, 0);
+    // 대기접수는 영업 시작 M분 전부터 (자정 부근은 날짜가 넘어가므로 건너뜀)
+    if (nowMin > 200 && nowMin < 1240) {
+      const pre = await hours({ h24: false, start: hm(nowMin + 30), end: hm(nowMin + 120) }, 0, 0);
+      assert.equal(pre.body.openNow, false); // 영업 시작 전
+      const pre2 = await hours({ h24: false, start: hm(nowMin + 30), end: hm(nowMin + 120) }, 0, 60);
+      assert.deepEqual([pre2.status, pre2.body.openNow, pre2.body.hours.intake === `${hm(nowMin - 30)}~${hm(nowMin + 120)}`, pre2.body.hours.openBefore], [200, true, true, 60]); // 60분 전부터 접수
+      assert.equal((await hours({ h24: false, start: hm(nowMin + 30), end: hm(nowMin + 120) }, 0, 10)).body.openNow, false);
+      assert.equal((await hours({ h24: false, start: hm(nowMin - 60), end: hm(nowMin + 60) }, 120, 0)).status, 400); // 마감이 영업시간보다 길면 거절
+      assert.equal((await hours({ h24: false, start: hm(nowMin - 60), end: hm(nowMin + 60) }, 0, 181)).status, 400);
+    }
+    await hours({ h24: true }, 0, 0);
+    // 영업 안내 메모: 관리자가 쓰면 손님 화면(/api/me, /api/home)에 그대로 내려간다
+    assert.equal((await call('POST', '/api/admin/intake/memo', { memo: 'x'.repeat(501) })).status, 400);
+    assert.equal((await call('POST', '/api/admin/intake/memo', { memo: '  공휴일 전날은 04시까지 영업합니다.\r\n전화 후 방문해 주세요.  ' })).body.hours.memo, '공휴일 전날은 04시까지 영업합니다.\n전화 후 방문해 주세요.');
+    assert.equal((await call('GET', '/api/me')).body.intake.hours.memo.split('\n').length, 2);
+    assert.equal((await call('GET', '/api/home')).body.intake.hours.memo.startsWith('공휴일 전날'), true);
+    assert.equal((await call('POST', '/api/admin/intake/memo', { memo: '' })).body.hours.memo, '');
+    // 영업일 기준 시각: 요일별 영업시간과 별개로 직접 정한다(00:00~11:59)
     const dayStart = async () => (await call('GET', '/api/admin/business-day')).body.start;
     await hours({ h24: false, start: '10:00', end: '02:00' });
-    assert.equal(await dayStart(), '02:00');
-    await hours({ h24: false, start: '10:00', end: '22:00' });
-    assert.equal(await dayStart(), '00:00');
+    assert.equal(await dayStart(), '00:00'); // 자정을 넘기는 영업이라도 자동으로 바뀌지 않는다
     assert.equal((await hours({ h24: true, dayStart: '13:00' })).status, 400); // 00:00~11:59 만
     assert.equal((await hours({ h24: true, dayStart: '05:00' })).body.bizDay, '05:00');
     assert.equal(await dayStart(), '05:00');
     assert.equal((await call('POST', '/api/admin/business-day', { start: '05:00' })).status, 404); // 별도 설정은 없어졌다
     assert.equal((await hours({ h24: true, dayStart: '00:00' })).body.bizDay, '00:00');
+    // 요일별 영업시간·공휴일·예외 날짜
+    const holidayMod = require('./holidays');
+    const names = (y) => holidayMod.upcomingHolidays(y + '-01-01', 364).map((x) => x.date.slice(5) + ' ' + x.name);
+    assert.ok(names(2026).includes('02-17 설날') && names(2026).includes('05-25 부처님오신날 대체공휴일') && names(2026).includes('08-17 광복절 대체공휴일') && names(2026).includes('10-05 개천절 대체공휴일'));
+    assert.ok(!names(2026).some((x) => x.includes('추석 대체')) && names(2025).includes('10-08 추석 대체공휴일') && names(2025).includes('05-06 어린이날 대체공휴일'));
+    const rule = (biz) => ({ biz: { closed: false, h24: false, start: '10:00', end: '22:00', ...biz } });
+    const everyDay = (r) => Array.from({ length: 8 }, () => r);
+    const sched = (days, extra = {}) => call('POST', '/api/admin/intake/schedule', { days, ...extra });
+    const dow = new Date().getDay();
+    const openToday = rule({ h24: true }), closedToday = rule({ closed: true });
+    const mine = (r) => everyDay(closedToday).map((x, i) => (i === dow ? r : x)); // 오늘 요일만 r, 나머지는 휴무
+    assert.equal((await sched(everyDay(openToday).slice(0, 7))).status, 400); // 8개가 아니면 거절
+    assert.equal((await sched(mine(rule({ start: '10:00', end: '10:00' })))).status, 400);
+    const r1 = await sched(mine(openToday));
+    assert.deepEqual([r1.status, r1.body.openNow, r1.body.hours.business], [200, true, '24시간']);
+    const r2 = await sched(mine(closedToday));
+    assert.deepEqual([r2.body.openNow, r2.body.hours.business, r2.body.hours.closed], [false, '휴무', true]);
+    assert.equal((await call('POST', '/api/phone/send', { phone: '01012345678' })).status, 403); // 휴무일은 접수 불가
+    // 예외 날짜: 오늘만 영업으로 열기 / 휴무로 닫기
+    const todayStr = new Date().toLocaleDateString('sv');
+    const ex1 = await call('POST', '/api/admin/intake/exception', { date: todayStr, biz: { closed: false, h24: true }, note: '임시 영업' });
+    assert.deepEqual([ex1.body.openNow, ex1.body.hours.note, ex1.body.exceptions.length], [true, '임시 영업', 1]);
+    await sched(mine(openToday));
+    const ex2 = await call('POST', '/api/admin/intake/exception', { date: todayStr, biz: { closed: true }, note: '' });
+    assert.deepEqual([ex2.body.openNow, ex2.body.exceptions.length], [false, 1]); // 같은 날짜는 덮어씀
+    assert.equal((await call('POST', '/api/admin/intake/exception', { date: 'x', biz: { closed: true } })).status, 400);
+    assert.equal((await call('POST', '/api/admin/intake/exception/delete', { date: todayStr })).body.openNow, true); // 예외 삭제 → 요일 규칙(영업)
+    // 자정을 넘기는 영업: 어제 22:00~(오늘)새벽 종료 전까지 이어진다
+    const nowM = new Date().getHours() * 60 + new Date().getMinutes();
+    const yest = (dow + 6) % 7;
+    if (nowM < 1380) { const spill = everyDay(closedToday).map((x, i) => (i === yest ? rule({ start: hm(nowM + 60), end: hm(nowM + 30) }) : x)); // 어제 창이 (지금+60분)~(지금+30분)=24시간 가까이 이어지며 지금은 종료 전
+    assert.equal((await sched(spill)).body.openNow, true); } // 자정 직전에는 건너뜀
+    const ymd = (await sched(everyDay(openToday), { dayStart: '00:00' })).body;
+    assert.equal(ymd.openNow, true);
+    await sched(everyDay(openToday).map((r) => ({ ...r })));
     assert.equal((await hours({ h24: true })).body.openNow, true);
     delete jar.admin;
 
@@ -568,11 +622,11 @@ mock.listen(0, () => server.listen(0, async () => {
     assert.equal((await call('POST', `/api/tournaments/99999/apply`)).status, 404);
     assert.equal((await act(99999, 'confirm')).status, 404);
     // 대기접수 시간이 아니어도 대회 신청 기간에는 번호 인증을 받을 수 있다
-    await call('POST', '/api/admin/intake/hours', { biz: { h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) }, wait: { same: true } });
+    await hours({ h24: false, start: hm(nowMin + 60), end: hm(nowMin + 120) });
     assert.equal((await call('POST', '/api/phone/send', { phone: '123' })).body.code, 'INTAKE_CLOSED');
     assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).status, 400);
     assert.equal((await call('POST', '/api/phone/send', { phone: '123', for: 'tournament' })).body.code, undefined);
-    await call('POST', '/api/admin/intake/hours', { biz: { h24: true }, wait: { same: true } });
+    await hours({ h24: true });
     // --- 행사 일정 캘린더 ---
     const cal = (b) => call('POST', '/api/admin/calendar', b);
     assert.equal((await fetch(base + '/api/admin/calendar', { method: 'POST' })).status, 401);

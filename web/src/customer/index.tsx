@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ActionIcon, Alert, Anchor, Button, Text, TextInput, Title } from '@mantine/core';
 import { LuMinus, LuPlus } from 'react-icons/lu';
-import { Card, Consent, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
+import { Card, Consent, MemoNotice, Page, PhoneVerify, Providers, UserBar, mount, useMe } from './common';
 import { post } from '../lib/api';
 import { useEvents } from '../lib/useEvents';
 import type { Me, PublicEntry } from '../lib/types';
@@ -114,7 +114,8 @@ function App() {
       ) : (
         <>
           {blocked && <Card><Text ta="center">{blocked}</Text></Card>}
-          {!blocked && <Text ta="center" c="dimmed" fz="sm" className="mb-3">대기접수 가능 시간: <b>{me.intake.hours.intake}</b></Text>}
+          {me.intake.hours.memo && <MemoNotice text={me.intake.hours.memo} />}
+          {!blocked && <Text ta="center" c="dimmed" fz="sm" className="mb-3">{me.intake.hours.closed ? <>오늘은 <b>휴무</b>입니다</> : <>대기접수 가능 시간(오늘): <b>{me.intake.hours.intake}</b></>}</Text>}
           {logged && <UserBar me={me} onDone={userDone} />}
           {!blocked && needConsent && <Consent key={me.consent!.missing.join()} me={me} onSaved={reload} />}
           {!blocked && !logged && (
